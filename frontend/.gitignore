@@ -1,0 +1,14 @@
+# Dépendances
+node_modules/
+
+# Secrets : ne jamais publier
+.env
+.env.*
+!.env.example
+
+# Compilation et fichiers temporaires
+dist/
+build/
+*.log
+.DS_Store
+Thumbs.db

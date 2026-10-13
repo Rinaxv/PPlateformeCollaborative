@@ -1,0 +1,320 @@
+/* =========================================================
+   LISTE : ELEMENTS (div cliquable avec menu)
+========================================================= */
+
+.document-item {
+  cursor: pointer;
+}
+
+.item-menu-button {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.2s ease, background-color 0.2s ease, color 0.2s ease;
+}
+
+.document-item:hover .item-menu-button,
+.document-item.selected .item-menu-button,
+.item-menu-button:focus-visible {
+  opacity: 1;
+}
+
+.item-menu-button:hover {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+@media (hover: none) {
+  .item-menu-button {
+    opacity: 1;
+  }
+}
+
+.fav-star {
+  flex-shrink: 0;
+  color: #f59e0b;
+  fill: #f59e0b;
+}
+
+.menu-count.muted {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+/* =========================================================
+   MENU CONTEXTUEL
+========================================================= */
+
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 95;
+  width: 218px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  animation: scaleIn 0.18s ease;
+}
+
+.context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu button:hover {
+  background: var(--surface-2);
+}
+
+.context-menu button.danger {
+  color: var(--danger);
+}
+
+.context-menu button.danger:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.context-menu hr {
+  margin: 5px 6px;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+/* =========================================================
+   NOTIFICATIONS
+========================================================= */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 200;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 12px 20px;
+  border-radius: 14px;
+  background: var(--text);
+  color: var(--surface);
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: var(--shadow-lg);
+  animation: toastIn 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.toast.error {
+  background: var(--danger);
+  color: #fff;
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 16px) scale(0.95); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* =========================================================
+   FENETRE RENOMMER
+========================================================= */
+
+.rename-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rename-form input {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.rename-form input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+/* =========================================================
+   TABLEAU DE BORD : CARTES
+========================================================= */
+
+.dashboard-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: fadeUp 0.6s ease 0.25s backwards;
+}
+
+.dashboard-section h2 {
+  margin: 0;
+  font-size: 19px;
+}
+
+.doc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.doc-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+  animation: fadeUp 0.5s ease backwards;
+  animation-delay: calc(var(--i, 0) * 60ms + 0.3s);
+}
+
+.doc-card:hover {
+  transform: translateY(-5px);
+  box-shadow: var(--shadow-md);
+  border-color: var(--accent);
+}
+
+.doc-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.doc-card strong {
+  font-size: 15.5px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.doc-card span.meta {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.section-empty {
+  padding: 28px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 14px;
+}
+
+/* =========================================================
+   CORBEILLE
+========================================================= */
+
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 22px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  font-size: 15px;
+  font-weight: 700;
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.danger-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 20%, transparent);
+  transform: translateY(-2px);
+}
+
+.danger-button:disabled {
+  opacity: 0.45;
+}
+
+.trash-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.trash-pane h2 {
+  margin: 8px 0 0;
+  color: var(--text);
+}
+
+.trash-pane p {
+  margin: 0;
+  max-width: 360px;
+  font-size: 14px;
+}
+
+.trash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.trash-actions .restore-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 20px;
+  border: none;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  transition: transform 0.2s ease;
+}
+
+.trash-actions .restore-button:hover {
+  transform: translateY(-2px);
+}
+
+.trash-actions .danger-button {
+  padding: 11px 20px;
+  font-size: 14px;
+}
