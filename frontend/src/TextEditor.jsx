@@ -8,10 +8,27 @@ import React, {
 
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { Node } from "@tiptap/core";
 import Placeholder from "@tiptap/extension-placeholder";
 import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
+import {
+  TextStyle,
+  Color,
+  FontFamily,
+  FontSize,
+} from "@tiptap/extension-text-style";
+import Highlight from "@tiptap/extension-highlight";
+import TextAlign from "@tiptap/extension-text-align";
+import Subscript from "@tiptap/extension-subscript";
+import Superscript from "@tiptap/extension-superscript";
+import {
+  Table,
+  TableRow,
+  TableHeader,
+  TableCell,
+} from "@tiptap/extension-table";
+import { TaskList, TaskItem } from "@tiptap/extension-list";
+import ImageExtension from "@tiptap/extension-image";
 
 import * as Y from "yjs";
 import {
@@ -24,27 +41,27 @@ import { io } from "socket.io-client";
 import axios from "axios";
 
 import {
-  Bold,
-  Italic,
-  Underline as UnderlineIcon,
-  Strikethrough,
-  List,
-  ListOrdered,
-  Heading1,
-  Heading2,
-  Heading3,
+  ArrowLeft,
+  Save,
   Undo2,
   Redo2,
-  Download,
-  Copy,
-  Check,
+  Share2,
   Wifi,
   WifiOff,
-  FileText,
   LoaderCircle,
+  Info,
   FileUp,
-  FilePlus2,
+  Download,
+  Printer,
   History,
+  X,
+  Search,
+  ChevronUp,
+  ChevronDown,
+  BookOpen,
+  FileText,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 
 import html2pdf from "html2pdf.js";
@@ -53,6 +70,14 @@ import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 import VersionHistory from "./VersionHistory";
+import { Ribbon, PAGE_SIZES, MARGINS, DEFAULT_PAGE } from "./Ribbon";
+import {
+  PageBreak,
+  LineSpacing,
+  SearchReplace,
+  searchKey,
+} from "./customExtensions";
+import { useTheme } from "./theme";
 
 import "./TextEditor.css";
 import "./extras.css";
@@ -77,31 +102,37 @@ const CURSOR_COLORS = [
   "#65a30d",
 ];
 
-/* =========================================================
-   NOEUD "SAUT DE PAGE"
-========================================================= */
+const DEFAULT_PT = { small: 10.5, medium: 12, large: 13.5 };
 
-const PageBreak = Node.create({
-  name: "pageBreak",
-  group: "block",
-  atom: true,
-  selectable: true,
+const PX_TO_MM = 0.2646;
 
-  parseHTML() {
-    return [{ tag: 'div[data-type="page-break"]' }];
-  },
+const PRINT_CSS = `
+body{margin:0;font-family:Arial,Helvetica,sans-serif;font-size:12pt;line-height:1.4;color:#111}
+p{margin:0 0 .6em;min-height:1.4em}
+h1{font-size:1.8em}h2{font-size:1.4em}h3{font-size:1.17em}
+h1,h2,h3{margin:.9em 0 .4em;line-height:1.25;break-after:avoid}
+ul,ol{padding-left:1.6em}
+blockquote{margin-left:0;padding-left:14px;border-left:3px solid #cbd5e1;color:#475569;font-style:italic}
+pre{background:#0f172a;color:#e2e8f0;padding:10px 12px;border-radius:6px;white-space:pre-wrap}
+code{font-family:Consolas,monospace}
+img{max-width:100%;height:auto}
+table{border-collapse:collapse;width:100%;table-layout:fixed;margin:.6em 0}
+td,th{border:1px solid #777;padding:5px 8px;vertical-align:top}
+th{background:#eef2f7}
+ul[data-type="taskList"]{list-style:none;padding-left:.2em}
+ul[data-type="taskList"] li{display:flex;gap:.5em}
+ul[data-type="taskList"] li>div{flex:1}
+div[data-type="page-break"]{break-after:page;height:0;margin:0;border:0}
+hr{border:none;border-top:1px solid #ccc;margin:1em 0}
+`;
 
-  renderHTML() {
-    return [
-      "div",
-      {
-        "data-type": "page-break",
-        class: "document-page-break",
-        contenteditable: "false",
-      },
-    ];
-  },
-});
+const TABS = [
+  { id: "home", label: "Accueil" },
+  { id: "insert", label: "Insertion" },
+  { id: "layout", label: "Mise en page" },
+  { id: "review", label: "Révision" },
+  { id: "view", label: "Affichage" },
+];
 
 /* =========================================================
    OUTILS
@@ -151,7 +182,7 @@ function jsonHasContent(node) {
     return Boolean(node.text && node.text.trim());
   }
 
-  if (node.type === "pageBreak") {
+  if (node.type === "pageBreak" || node.type === "image") {
     return true;
   }
 
@@ -167,15 +198,11 @@ function convertRestContentToTiptap(documentContent) {
     return null;
   }
 
-  if (typeof documentContent === "object" && documentContent.type === "doc") {
-    return documentContent;
-  }
-
   if (
     typeof documentContent === "object" &&
-    Array.isArray(documentContent.content)
+    (documentContent.type === "doc" || Array.isArray(documentContent.content))
   ) {
-    return { type: "doc", content: documentContent.content };
+    return { type: "doc", content: documentContent.content || [] };
   }
 
   if (
@@ -190,6 +217,17 @@ function convertRestContentToTiptap(documentContent) {
   }
 
   return null;
+}
+
+function normalizePage(page) {
+  const safe = page && typeof page === "object" ? page : {};
+
+  return {
+    size: PAGE_SIZES[safe.size] ? safe.size : DEFAULT_PAGE.size,
+    orientation:
+      safe.orientation === "landscape" ? "landscape" : "portrait",
+    margin: MARGINS[safe.margin] ? safe.margin : DEFAULT_PAGE.margin,
+  };
 }
 
 function arrayBufferToBase64(buffer) {
@@ -212,6 +250,47 @@ function base64ToUint8Array(base64) {
   }
 
   return bytes;
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Réduit l'image pour ne pas alourdir la base de données ni la synchronisation
+function compressImage(file, maxSide = 900, quality = 0.78) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onerror = () => reject(new Error("Lecture de l'image impossible."));
+
+    reader.onload = () => {
+      const img = new window.Image();
+
+      img.onerror = () => reject(new Error("Image invalide."));
+
+      img.onload = () => {
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+
+      img.src = reader.result;
+    };
+
+    reader.readAsDataURL(file);
+  });
 }
 
 /* =========================================================
@@ -308,33 +387,6 @@ async function pdfToText(arrayBuffer) {
 }
 
 /* =========================================================
-   BOUTON DE BARRE D'OUTILS
-========================================================= */
-
-function ToolbarButton({
-  active = false,
-  onClick,
-  title,
-  disabled = false,
-  className = "",
-  children,
-}) {
-  return (
-    <button
-      type="button"
-      className={`toolbar-button${active ? " active" : ""}${
-        className ? ` ${className}` : ""
-      }`}
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-    >
-      {children}
-    </button>
-  );
-}
-
-/* =========================================================
    EDITEUR
 ========================================================= */
 
@@ -345,11 +397,15 @@ export default function TextEditor({
   token = null,
   readOnly = false,
   onSaved,
+  onClose,
+  onShare,
 }) {
   const documentId = documentProp?.id || documentIdProp || "document-test-001";
 
   const initialTitle =
     documentProp?.content?.title || documentTitleProp || "Document sans titre";
+
+  const { preferences, resolvedMode, update: updateTheme } = useTheme();
 
   /* ---------------- ETATS ---------------- */
 
@@ -357,19 +413,42 @@ export default function TextEditor({
   const [status, setStatus] = useState("Connexion...");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [collaborators, setCollaborators] = useState(0);
   const [importing, setImporting] = useState(false);
   const [ready, setReady] = useState(false);
   const [peers, setPeers] = useState([]);
+
+  const [activeTab, setActiveTab] = useState("home");
+  const [showBackstage, setShowBackstage] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showStats, setShowStats] = useState(false);
+
+  const [pageSetup, setPageSetup] = useState(DEFAULT_PAGE);
+  const [zoom, setZoom] = useState(100);
+  const [showRuler, setShowRuler] = useState(true);
+  const [readingMode, setReadingMode] = useState(false);
+  const [spell, setSpell] = useState(true);
+
+  const [findOpen, setFindOpen] = useState(false);
+  const [replaceMode, setReplaceMode] = useState(false);
+  const [findTerm, setFindTerm] = useState("");
+  const [replaceTerm, setReplaceTerm] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+
+  const [contentHeight, setContentHeight] = useState(0);
+  const [scrollTop, setScrollTop] = useState(0);
 
   /* ---------------- REFS ---------------- */
 
   const fileInputRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const docAreaRef = useRef(null);
+  const pageRef = useRef(null);
   const socketRef = useRef(null);
+  const saveRef = useRef(() => {});
+  const printRef = useRef(() => {});
 
   const documentPropRef = useRef(documentProp);
   documentPropRef.current = documentProp;
@@ -392,7 +471,6 @@ export default function TextEditor({
   const [awareness] = useState(() => new Awareness(yDoc));
   const currentUser = useMemo(() => getUserFromToken(token || ""), [token]);
 
-  // Libère le minuteur interne d'awareness (compatible React StrictMode)
   useEffect(() => {
     aliveRef.current = true;
 
@@ -411,11 +489,31 @@ export default function TextEditor({
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ undoRedo: false }),
+      StarterKit.configure({
+        undoRedo: false,
+        link: { openOnClick: false },
+      }),
+      TextStyle,
+      Color,
+      FontFamily,
+      FontSize,
+      Highlight.configure({ multicolor: true }),
+      TextAlign.configure({ types: ["heading", "paragraph"] }),
+      Subscript,
+      Superscript,
+      Table.configure({ resizable: true }),
+      TableRow,
+      TableHeader,
+      TableCell,
+      TaskList,
+      TaskItem.configure({ nested: true }),
+      ImageExtension.configure({ allowBase64: true }),
       Placeholder.configure({
         placeholder: "Commencez à rédiger votre document...",
       }),
       PageBreak,
+      LineSpacing,
+      SearchReplace,
       Collaboration.configure({ document: yDoc }),
       CollaborationCaret.configure({
         provider: { awareness },
@@ -424,22 +522,157 @@ export default function TextEditor({
     ],
     content: "",
     editable: !readOnly,
+    shouldRerenderOnTransaction: true,
     editorProps: {
-      attributes: { class: "tiptap-editor-content" },
+      attributes: {
+        class: "tiptap-editor-content",
+        spellcheck: "true",
+        lang: "fr",
+      },
     },
   });
 
   useEffect(() => {
     if (editor) {
-      editor.setEditable(!readOnly);
+      editor.setEditable(!readOnly && !readingMode);
     }
-  }, [editor, readOnly]);
+  }, [editor, readOnly, readingMode]);
+
+  useEffect(() => {
+    if (!editor) return;
+
+    editor.setOptions({
+      editorProps: {
+        attributes: {
+          class: "tiptap-editor-content",
+          spellcheck: String(spell),
+          lang: "fr",
+        },
+      },
+    });
+  }, [editor, spell]);
 
   useEffect(() => {
     setTitle(
       documentProp?.content?.title || documentTitleProp || "Document sans titre"
     );
   }, [documentProp, documentTitleProp]);
+
+  /* ---------------- DONNEES CALCULEES ---------------- */
+
+  const pageDef = PAGE_SIZES[pageSetup.size] || PAGE_SIZES.A4;
+  const landscape = pageSetup.orientation === "landscape";
+  const pageW = landscape ? pageDef.h : pageDef.w;
+  const pageH = landscape ? pageDef.w : pageDef.h;
+  const marginPx = (MARGINS[pageSetup.margin] || MARGINS.normal).px;
+  const zoomFactor = zoom / 100;
+
+  const pages = Math.max(
+    1,
+    Math.ceil((contentHeight + marginPx * 2) / pageH)
+  );
+
+  const currentPage = Math.min(
+    pages,
+    Math.max(1, Math.floor((scrollTop + 200) / (pageH * zoomFactor)) + 1)
+  );
+
+  const isDark = resolvedMode === "dark";
+  const defaultPt = DEFAULT_PT[preferences.editorFontSize] || 12;
+
+  const searchState = editor ? searchKey.getState(editor.state) : null;
+  const searchCount = searchState?.results.length || 0;
+  const searchCurrent = searchState?.current || 0;
+
+  const stats = useMemo(() => {
+    if (!editor) {
+      return { words: 0, chars: 0, charsNoSpaces: 0, paragraphs: 0 };
+    }
+
+    const doc = editor.state.doc;
+    const text = doc.textBetween(0, doc.content.size, "\n", " ");
+    const trimmed = text.trim();
+
+    let paragraphs = 0;
+
+    doc.descendants((node) => {
+      if (
+        (node.type.name === "paragraph" || node.type.name === "heading") &&
+        node.textContent.trim()
+      ) {
+        paragraphs += 1;
+      }
+    });
+
+    return {
+      words: trimmed ? trimmed.split(/\s+/).length : 0,
+      chars: text.replace(/\n/g, "").length,
+      charsNoSpaces: text.replace(/\s/g, "").length,
+      paragraphs,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor?.state.doc]);
+
+  const inTable = Boolean(editor?.isActive("table"));
+
+  useEffect(() => {
+    if (activeTab === "table" && !inTable) {
+      setActiveTab("home");
+    }
+  }, [activeTab, inTable]);
+
+  /* ---------------- MESURE DES PAGES ---------------- */
+
+  useEffect(() => {
+    if (!editor) return undefined;
+
+    let observer = null;
+    let cancelled = false;
+
+    const timer = setTimeout(() => {
+      const element = pageRef.current?.querySelector(".tiptap-editor-content");
+
+      if (!element || cancelled) return;
+
+      const measure = () => setContentHeight(element.offsetHeight);
+
+      measure();
+
+      observer = new ResizeObserver(measure);
+      observer.observe(element);
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      observer?.disconnect();
+    };
+  }, [editor]);
+
+  /* ---------------- RECHERCHE ---------------- */
+
+  useEffect(() => {
+    if (!editor) return;
+
+    editor.commands.setSearchTerm(findOpen ? findTerm : "", caseSensitive);
+  }, [editor, findOpen, findTerm, caseSensitive]);
+
+  useEffect(() => {
+    if (!editor || !findOpen || searchCount === 0) return undefined;
+
+    const timer = setTimeout(() => {
+      editor.view.dom
+        .querySelector(".search-match.current")
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 30);
+
+    return () => clearTimeout(timer);
+  }, [editor, findOpen, searchCurrent, searchCount, findTerm]);
+
+  const openFind = useCallback((withReplace) => {
+    setFindOpen(true);
+    setReplaceMode(Boolean(withReplace));
+  }, []);
 
   /* ---------------- DOCUMENT VIDE ? ---------------- */
 
@@ -520,7 +753,7 @@ export default function TextEditor({
 
   useEffect(() => {
     if (!editor || !documentId) {
-      return;
+      return undefined;
     }
 
     let cancelled = false;
@@ -566,6 +799,8 @@ export default function TextEditor({
           documentContent?.title || documentTitleProp || "Document sans titre"
         );
 
+        setPageSetup(normalizePage(documentContent?.page));
+
         pendingRestRef.current = loadedContent;
         restHadTextRef.current = jsonHasContent(loadedContent);
         restLoadedRef.current = true;
@@ -598,7 +833,7 @@ export default function TextEditor({
 
   useEffect(() => {
     if (!editor || !documentId) {
-      return;
+      return undefined;
     }
 
     serverHasStateRef.current = null;
@@ -607,8 +842,6 @@ export default function TextEditor({
     const socket = io(SOCKET_URL, token ? { auth: { token } } : {});
 
     socketRef.current = socket;
-
-    /* ---------- presence ---------- */
 
     const refreshPeers = () => {
       const list = [];
@@ -685,8 +918,6 @@ export default function TextEditor({
         "remote"
       );
     }
-
-    /* ---------- connexion ---------- */
 
     function handleConnect() {
       setStatus("Connecté");
@@ -775,8 +1006,6 @@ export default function TextEditor({
       }
 
       setCollaborators(Number(data.count) || 0);
-
-      // Un collaborateur arrive : on lui renvoie notre présence
       broadcastAwareness();
     }
 
@@ -859,6 +1088,10 @@ export default function TextEditor({
       return;
     }
 
+    if (readOnly) {
+      return;
+    }
+
     const finalTitle =
       typeof titleOverride === "string" ? titleOverride : title;
 
@@ -888,6 +1121,7 @@ export default function TextEditor({
       const contentToSave = {
         type: "doc",
         title: String(finalTitle || "").trim() || "Document sans titre",
+        page: pageSetup,
         content: tiptapContent.content || [],
       };
 
@@ -897,7 +1131,6 @@ export default function TextEditor({
         { headers }
       );
 
-      // Version d'historique : un échec ici ne doit pas bloquer l'enregistrement
       axios
         .post(
           `${API_URL}/documents/${documentId}/versions`,
@@ -935,6 +1168,8 @@ export default function TextEditor({
     }
   };
 
+  saveRef.current = () => handleSave();
+
   /* =========================================================
      RESTAURATION D'UNE VERSION
   ========================================================= */
@@ -952,7 +1187,6 @@ export default function TextEditor({
 
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
-    // Conserve l'état actuel dans l'historique avant d'écraser
     try {
       await axios.post(
         `${API_URL}/documents/${documentId}/versions`,
@@ -960,6 +1194,7 @@ export default function TextEditor({
           content: {
             type: "doc",
             title: String(title || "").trim() || "Document sans titre",
+            page: pageSetup,
             content: editor.getJSON().content || [],
           },
           label: "Avant restauration",
@@ -971,6 +1206,10 @@ export default function TextEditor({
     }
 
     editor.commands.setContent(restored);
+
+    if (versionContent?.page) {
+      setPageSetup(normalizePage(versionContent.page));
+    }
 
     const restoredTitle =
       typeof versionTitle === "string" && versionTitle.trim()
@@ -1069,28 +1308,87 @@ export default function TextEditor({
   };
 
   /* =========================================================
+     INSERTION D'IMAGE
+  ========================================================= */
+
+  const handleImageFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file || !editor) return;
+
+    if (!file.type.startsWith("image/")) {
+      setErrorMessage("Ce fichier n'est pas une image.");
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setErrorMessage("Image trop volumineuse (10 Mo maximum).");
+      return;
+    }
+
+    try {
+      const src = await compressImage(file);
+
+      editor.chain().focus().setImage({ src, alt: file.name }).run();
+    } catch (error) {
+      setErrorMessage(error.message || "Impossible d'insérer l'image.");
+    }
+  };
+
+  /* =========================================================
+     COLLER
+  ========================================================= */
+
+  const handlePasteButton = async () => {
+    if (!editor) return;
+
+    try {
+      const text = await navigator.clipboard.readText();
+
+      if (!text) return;
+
+      const lines = text.replace(/\r\n/g, "\n").split("\n");
+
+      if (lines.length === 1) {
+        editor.chain().focus().insertContent(text).run();
+      } else {
+        editor
+          .chain()
+          .focus()
+          .insertContent(
+            lines.map((line) => ({
+              type: "paragraph",
+              content: line ? [{ type: "text", text: line }] : [],
+            }))
+          )
+          .run();
+      }
+    } catch {
+      setErrorMessage(
+        "Le navigateur refuse l'accès au presse-papiers. Utilisez Ctrl + V."
+      );
+    }
+  };
+
+  /* =========================================================
      EXPORT PDF
   ========================================================= */
 
   const handleDownloadPDF = useCallback(() => {
     if (!editor) return;
 
-    const editorElement = document.querySelector(".tiptap-editor-content");
+    const editorElement = pageRef.current?.querySelector(
+      ".tiptap-editor-content"
+    );
 
     if (!editorElement) return;
 
     const exportContainer = document.createElement("div");
 
-    exportContainer.style.width = "700px";
-    exportContainer.style.padding = "10px 20px";
+    exportContainer.style.width = `${pageW - marginPx * 2}px`;
     exportContainer.style.backgroundColor = "#ffffff";
     exportContainer.style.color = "#172033";
-    exportContainer.style.fontFamily = "Arial, sans-serif";
-    exportContainer.style.lineHeight = "1.6";
-
-    const heading = document.createElement("h1");
-    heading.textContent = title || "Document sans titre";
-    heading.style.margin = "0 0 24px";
 
     const contentClone = editorElement.cloneNode(true);
     contentClone.removeAttribute("contenteditable");
@@ -1100,30 +1398,34 @@ export default function TextEditor({
       .querySelectorAll(".is-editor-empty")
       .forEach((element) => element.removeAttribute("data-placeholder"));
 
-    // Retire les curseurs des collaborateurs du PDF
     contentClone
       .querySelectorAll(
-        ".collaboration-carets__caret, .collaboration-cursor__caret"
+        ".collaboration-carets__caret, .collaboration-cursor__caret, .column-resize-handle"
       )
       .forEach((element) => element.remove());
 
-    exportContainer.appendChild(heading);
     exportContainer.appendChild(contentClone);
 
     const safeFileName = (title || "document")
       .replace(/[\\/:*?"<>|]/g, "-")
       .trim();
 
+    const marginMm = marginPx * PX_TO_MM;
+
     const options = {
-      margin: [12, 12, 12, 12],
+      margin: [marginMm, marginMm, marginMm, marginMm],
       filename: `${safeFileName || "document"}.pdf`,
       image: { type: "jpeg", quality: 0.98 },
       html2canvas: { scale: 2, useCORS: true },
-      jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+      jsPDF: {
+        unit: "mm",
+        format: pageDef.pdf,
+        orientation: pageSetup.orientation,
+      },
       pagebreak: {
         mode: ["css", "legacy"],
         before: ".document-page-break",
-        avoid: ["h1", "h2", "h3", "li"],
+        avoid: ["h1", "h2", "h3", "li", "tr", "img"],
       },
     };
 
@@ -1135,26 +1437,106 @@ export default function TextEditor({
         console.error("Erreur export PDF :", error);
         setErrorMessage("Impossible de générer le PDF.");
       });
-  }, [editor, title]);
+  }, [editor, title, pageW, marginPx, pageDef, pageSetup.orientation]);
 
   /* =========================================================
-     COPIER LE LIEN
+     IMPRESSION
   ========================================================= */
 
-  const handleCopyLink = useCallback(async () => {
-    try {
-      const url = `${window.location.origin}/documents/${documentId}`;
+  const handlePrint = () => {
+    if (!editor) return;
 
-      await navigator.clipboard.writeText(url);
+    const marginMm = (marginPx * PX_TO_MM).toFixed(1);
 
-      setCopied(true);
+    const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>${escapeHtml(
+      title
+    )}</title><style>@page{size:${pageDef.css} ${
+      pageSetup.orientation
+    };margin:${marginMm}mm}${PRINT_CSS}</style></head><body>${editor.getHTML()}</body></html>`;
 
-      setTimeout(() => setCopied(false), 2000);
-    } catch (error) {
-      console.error("Erreur copie lien :", error);
-      setErrorMessage("Impossible de copier le lien.");
+    const iframe = document.createElement("iframe");
+
+    iframe.style.cssText =
+      "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+
+    document.body.appendChild(iframe);
+
+    const frameDocument = iframe.contentWindow.document;
+
+    frameDocument.open();
+    frameDocument.write(html);
+    frameDocument.close();
+
+    setTimeout(() => {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+
+      setTimeout(() => iframe.remove(), 2000);
+    }, 300);
+  };
+
+  printRef.current = handlePrint;
+
+  /* =========================================================
+     ZOOM, PLEIN ECRAN, RACCOURCIS
+  ========================================================= */
+
+  const fitWidth = () => {
+    const width = docAreaRef.current?.clientWidth || 0;
+
+    if (!width) return;
+
+    setZoom(
+      Math.min(200, Math.max(50, Math.floor(((width - 48) / pageW) * 100)))
+    );
+  };
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.();
+    } else {
+      document.documentElement.requestFullscreen?.();
     }
-  }, [documentId]);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      const key = event.key.toLowerCase();
+      const mod = event.ctrlKey || event.metaKey;
+
+      if (mod && key === "s") {
+        event.preventDefault();
+        saveRef.current();
+      } else if (mod && key === "f") {
+        event.preventDefault();
+        openFind(false);
+      } else if (mod && key === "h") {
+        event.preventDefault();
+        openFind(true);
+      } else if (mod && key === "p") {
+        event.preventDefault();
+        printRef.current();
+      } else if (event.key === "Escape") {
+        setFindOpen(false);
+        setShowBackstage(false);
+        setShowStats(false);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openFind]);
+
+  const keepFocus = (event) => {
+    const tag = event.target.tagName;
+
+    if (["INPUT", "SELECT", "OPTION", "TEXTAREA"].includes(tag)) {
+      return;
+    }
+
+    event.preventDefault();
+  };
 
   /* =========================================================
      CHARGEMENT DE L'EDITEUR
@@ -1162,279 +1544,651 @@ export default function TextEditor({
 
   if (!editor) {
     return (
-      <div className="editor-loading">
-        <LoaderCircle className="loading-icon" size={25} />
-        <span>Initialisation de l'éditeur...</span>
+      <div className="editor-screen">
+        <div className="editor-loading">
+          <LoaderCircle className="loading-icon" size={25} />
+          <span>Initialisation de l'éditeur...</span>
+        </div>
       </div>
     );
   }
+
+  const backstageAction = (action) => () => {
+    setShowBackstage(false);
+    action();
+  };
+
+  const permissionLabel =
+    documentProp?.permission === "owner"
+      ? "Propriétaire"
+      : documentProp?.permission === "editor"
+      ? "Éditeur"
+      : "Lecteur";
+
+  const formatDateTime = (value) => {
+    if (!value) return "—";
+
+    const date = new Date(value);
+
+    return Number.isNaN(date.getTime())
+      ? "—"
+      : date.toLocaleString("fr-FR", {
+          day: "numeric",
+          month: "long",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+  };
+
+  const cmPx = 37.795 * zoomFactor;
+  const marginZoomed = marginPx * zoomFactor;
 
   /* =========================================================
      INTERFACE
   ========================================================= */
 
   return (
-    <div className="tiptap-editor-wrapper">
-      {/* ------------------- EN-TETE ------------------- */}
+    <div className="editor-screen">
+      {/* ------------------- BARRE DE TITRE ------------------- */}
 
-      <header className="tiptap-editor-header">
-        <div className="editor-title-section">
-          <div className="editor-file-icon">
-            <FileText size={21} />
-          </div>
+      <header className="titlebar">
+        <button
+          type="button"
+          className="tb-btn"
+          onClick={onClose}
+          title="Retour à mes documents"
+          aria-label="Retour à mes documents"
+        >
+          <ArrowLeft size={18} />
+        </button>
 
-          <div className="editor-title-info">
-            <input
-              type="text"
-              className="editor-title-input"
-              value={title}
-              onChange={(event) => {
-                setTitle(event.target.value);
-                setSaved(false);
-              }}
-              placeholder="Titre du document"
-              disabled={readOnly}
-            />
-
-            <div className="editor-status-line">
-              {status === "Hors-ligne" ? (
-                <WifiOff size={13} />
-              ) : (
-                <Wifi size={13} />
-              )}
-
-              <span>{status}</span>
-
-              {loading && (
-                <LoaderCircle className="status-loading" size={13} />
-              )}
-
-              <span className="collaborators-count">
-                👥 {collaborators} collaborateur
-                {collaborators > 1 ? "s" : ""} en ligne
-              </span>
-
-              {peers.length > 0 && (
-                <span className="peer-avatars">
-                  {peers.slice(0, 5).map((peer) => (
-                    <span
-                      key={peer.id}
-                      className="peer-avatar"
-                      style={{ background: peer.color }}
-                      title={peer.name}
-                    >
-                      {peer.name.charAt(0).toUpperCase()}
-                    </span>
-                  ))}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="editor-header-actions">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            className="editor-file-input-hidden"
-            onChange={handleImportFile}
-          />
-
-          {!readOnly && (
-            <button
-              type="button"
-              className="editor-action-button secondary"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={importing || loading || !ready}
-              title="Importer un fichier Word ou PDF"
-            >
-              <FileUp size={16} />
-              {importing ? "Importation..." : "Importer"}
-            </button>
-          )}
-
+        <div className="tb-quick">
           <button
             type="button"
-            className="editor-action-button"
+            className="tb-btn"
             onClick={() => handleSave()}
             disabled={saving || loading || readOnly || !ready}
+            title="Enregistrer (Ctrl+S)"
+            aria-label="Enregistrer"
           >
-            {saving
-              ? "Enregistrement..."
-              : saved
-                ? "Enregistré ✓"
-                : "Enregistrer"}
+            {saving ? (
+              <LoaderCircle size={17} className="loading-icon" />
+            ) : (
+              <Save size={17} />
+            )}
           </button>
 
           <button
             type="button"
-            className="editor-action-button secondary"
-            onClick={() => setShowHistory(true)}
-            title="Historique des versions"
+            className="tb-btn"
+            onClick={() => editor.chain().focus().undo().run()}
+            disabled={readOnly || !editor.can().undo()}
+            title="Annuler (Ctrl+Z)"
+            aria-label="Annuler"
           >
-            <History size={16} />
-            Historique
+            <Undo2 size={17} />
           </button>
 
           <button
             type="button"
-            className="editor-action-button secondary"
-            onClick={handleDownloadPDF}
+            className="tb-btn"
+            onClick={() => editor.chain().focus().redo().run()}
+            disabled={readOnly || !editor.can().redo()}
+            title="Rétablir (Ctrl+Y)"
+            aria-label="Rétablir"
           >
-            <Download size={16} />
-            PDF
+            <Redo2 size={17} />
           </button>
+        </div>
 
-          <button
-            type="button"
-            className="editor-action-button secondary"
-            onClick={handleCopyLink}
-          >
-            {copied ? <Check size={16} /> : <Copy size={16} />}
-            {copied ? "Copié" : "Copier le lien"}
-          </button>
+        <div className="tb-title">
+          <input
+            type="text"
+            value={title}
+            onChange={(event) => {
+              setTitle(event.target.value);
+              setSaved(false);
+            }}
+            placeholder="Titre du document"
+            disabled={readOnly}
+            aria-label="Titre du document"
+          />
+
+          <span className="tb-status">
+            {status === "Hors-ligne" ? (
+              <WifiOff size={12} />
+            ) : (
+              <Wifi size={12} />
+            )}
+
+            {saved ? "Enregistré ✓" : status}
+
+            {(loading || importing) && (
+              <LoaderCircle size={12} className="loading-icon" />
+            )}
+          </span>
+        </div>
+
+        <div className="tb-right">
+          {peers.length > 0 && (
+            <span className="peer-avatars">
+              {peers.slice(0, 5).map((peer) => (
+                <span
+                  key={peer.id}
+                  className="peer-avatar"
+                  style={{ background: peer.color }}
+                  title={peer.name}
+                >
+                  {peer.name.charAt(0).toUpperCase()}
+                </span>
+              ))}
+            </span>
+          )}
+
+          <span className="tb-count">
+            {collaborators} en ligne
+          </span>
+
+          {onShare && (
+            <button type="button" className="tb-share" onClick={onShare}>
+              <Share2 size={15} />
+              Partager
+            </button>
+          )}
         </div>
       </header>
 
-      {/* ------------------- BARRE D'OUTILS ------------------- */}
+      {/* ------------------- ONGLETS + RUBAN ------------------- */}
 
-      {!readOnly && (
-        <div className="tiptap-toolbar">
-          <ToolbarButton
-            active={editor.isActive("bold")}
-            onClick={() => editor.chain().focus().toggleBold().run()}
-            title="Gras"
+      {!readingMode && (
+        <>
+          <div className="tab-row" role="tablist">
+            <button
+              type="button"
+              className="tab file"
+              onClick={() => setShowBackstage(true)}
+            >
+              Fichier
+            </button>
+
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab.id}
+                className={activeTab === tab.id ? "tab active" : "tab"}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+
+            {inTable && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "table"}
+                className={
+                  activeTab === "table"
+                    ? "tab contextual active"
+                    : "tab contextual"
+                }
+                onClick={() => setActiveTab("table")}
+              >
+                Tableau
+              </button>
+            )}
+          </div>
+
+          <div
+            className={readOnly ? "ribbon locked" : "ribbon"}
+            onMouseDown={keepFocus}
           >
-            <Bold size={17} />
-          </ToolbarButton>
+            <Ribbon
+              editor={editor}
+              tab={activeTab}
+              spell={spell}
+              setSpell={setSpell}
+              pageSetup={pageSetup}
+              setPageSetup={setPageSetup}
+              zoom={zoom}
+              setZoom={setZoom}
+              onFitWidth={fitWidth}
+              showRuler={showRuler}
+              setShowRuler={setShowRuler}
+              readingMode={readingMode}
+              setReadingMode={setReadingMode}
+              onFind={openFind}
+              onPrint={handlePrint}
+              onPickImage={() => imageInputRef.current?.click()}
+              onImport={() => fileInputRef.current?.click()}
+              onStats={() => setShowStats(true)}
+              onHistory={() => setShowHistory(true)}
+              onPaste={handlePasteButton}
+              isDark={isDark}
+              onToggleTheme={() =>
+                updateTheme({ mode: isDark ? "light" : "dark" })
+              }
+              onFullscreen={toggleFullscreen}
+              defaultPt={defaultPt}
+            />
+          </div>
+        </>
+      )}
 
-          <ToolbarButton
-            active={editor.isActive("italic")}
-            onClick={() => editor.chain().focus().toggleItalic().run()}
-            title="Italique"
-          >
-            <Italic size={17} />
-          </ToolbarButton>
-
-          <ToolbarButton
-            active={editor.isActive("underline")}
-            onClick={() => editor.chain().focus().toggleUnderline().run()}
-            title="Souligné"
-          >
-            <UnderlineIcon size={17} />
-          </ToolbarButton>
-
-          <ToolbarButton
-            active={editor.isActive("strike")}
-            onClick={() => editor.chain().focus().toggleStrike().run()}
-            title="Barré"
-          >
-            <Strikethrough size={17} />
-          </ToolbarButton>
-
-          <span className="toolbar-divider" />
-
-          <ToolbarButton
-            active={editor.isActive("heading", { level: 1 })}
-            onClick={() =>
-              editor.chain().focus().toggleHeading({ level: 1 }).run()
-            }
-            title="Titre 1"
-          >
-            <Heading1 size={17} />
-          </ToolbarButton>
-
-          <ToolbarButton
-            active={editor.isActive("heading", { level: 2 })}
-            onClick={() =>
-              editor.chain().focus().toggleHeading({ level: 2 }).run()
-            }
-            title="Titre 2"
-          >
-            <Heading2 size={17} />
-          </ToolbarButton>
-
-          <ToolbarButton
-            active={editor.isActive("heading", { level: 3 })}
-            onClick={() =>
-              editor.chain().focus().toggleHeading({ level: 3 }).run()
-            }
-            title="Titre 3"
-          >
-            <Heading3 size={17} />
-          </ToolbarButton>
-
-          <span className="toolbar-divider" />
-
-          <ToolbarButton
-            active={editor.isActive("bulletList")}
-            onClick={() => editor.chain().focus().toggleBulletList().run()}
-            title="Liste à puces"
-          >
-            <List size={17} />
-          </ToolbarButton>
-
-          <ToolbarButton
-            active={editor.isActive("orderedList")}
-            onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            title="Liste numérotée"
-          >
-            <ListOrdered size={17} />
-          </ToolbarButton>
-
-          <span className="toolbar-divider" />
-
-          <ToolbarButton
-            className="page-break-button"
-            onClick={() =>
-              editor.chain().focus().insertContent({ type: "pageBreak" }).run()
-            }
-            title="Ajouter une page vierge"
-          >
-            <FilePlus2 size={17} />
-            <span>Page vierge</span>
-          </ToolbarButton>
-
-          <span className="toolbar-divider" />
-
-          <ToolbarButton
-            onClick={() => editor.chain().focus().undo().run()}
-            disabled={!editor.can().undo()}
-            title="Annuler"
-          >
-            <Undo2 size={17} />
-          </ToolbarButton>
-
-          <ToolbarButton
-            onClick={() => editor.chain().focus().redo().run()}
-            disabled={!editor.can().redo()}
-            title="Rétablir"
-          >
-            <Redo2 size={17} />
-          </ToolbarButton>
-        </div>
+      {readingMode && (
+        <button
+          type="button"
+          className="reading-exit"
+          onClick={() => setReadingMode(false)}
+        >
+          <X size={15} />
+          Quitter le mode lecture
+        </button>
       )}
 
       {/* ------------------- MESSAGES ------------------- */}
 
       {errorMessage && (
-        <div className="editor-error-message">{errorMessage}</div>
+        <div className="editor-error-message">
+          {errorMessage}
+
+          <button
+            type="button"
+            onClick={() => setErrorMessage("")}
+            aria-label="Fermer le message"
+          >
+            <X size={14} />
+          </button>
+        </div>
       )}
 
-      {saved && (
-        <div className="editor-success-message">
-          Document enregistré avec succès !
+      {/* ------------------- RECHERCHE ------------------- */}
+
+      {findOpen && (
+        <div className="find-panel" role="search">
+          <div className="find-row">
+            <Search size={15} />
+
+            <input
+              type="text"
+              value={findTerm}
+              onChange={(event) => setFindTerm(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  editor.commands.searchStep(event.shiftKey ? -1 : 1);
+                }
+              }}
+              placeholder="Rechercher dans le document"
+              autoFocus
+            />
+
+            <span className="find-count">
+              {findTerm
+                ? searchCount
+                  ? `${searchCurrent + 1} / ${searchCount}`
+                  : "0 résultat"
+                : ""}
+            </span>
+
+            <button
+              type="button"
+              onClick={() => editor.commands.searchStep(-1)}
+              disabled={searchCount === 0}
+              aria-label="Résultat précédent"
+            >
+              <ChevronUp size={16} />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => editor.commands.searchStep(1)}
+              disabled={searchCount === 0}
+              aria-label="Résultat suivant"
+            >
+              <ChevronDown size={16} />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setFindOpen(false)}
+              aria-label="Fermer la recherche"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {replaceMode && (
+            <div className="find-row">
+              <span className="find-replace-label">Remplacer par</span>
+
+              <input
+                type="text"
+                value={replaceTerm}
+                onChange={(event) => setReplaceTerm(event.target.value)}
+                placeholder="Texte de remplacement"
+                disabled={readOnly}
+              />
+
+              <button
+                type="button"
+                className="find-action"
+                disabled={readOnly || searchCount === 0}
+                onClick={() => editor.commands.replaceCurrent(replaceTerm)}
+              >
+                Remplacer
+              </button>
+
+              <button
+                type="button"
+                className="find-action"
+                disabled={readOnly || searchCount === 0}
+                onClick={() => editor.commands.replaceAllMatches(replaceTerm)}
+              >
+                Tout remplacer
+              </button>
+            </div>
+          )}
+
+          <label className="find-case">
+            <input
+              type="checkbox"
+              checked={caseSensitive}
+              onChange={(event) => setCaseSensitive(event.target.checked)}
+            />
+            Respecter la casse
+          </label>
+
+          {!replaceMode && (
+            <button
+              type="button"
+              className="find-link"
+              onClick={() => setReplaceMode(true)}
+            >
+              Remplacer...
+            </button>
+          )}
         </div>
       )}
 
       {/* ------------------- DOCUMENT ------------------- */}
 
-      <main className="tiptap-document-area">
-        <div className="tiptap-document-page">
-          <EditorContent editor={editor} />
+      <div
+        className="doc-area"
+        ref={docAreaRef}
+        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      >
+        {showRuler && !readingMode && (
+          <div className="ruler-wrap">
+            <div
+              className="ruler"
+              style={{
+                width: pageW * zoomFactor,
+                backgroundImage: `linear-gradient(to right, var(--ruler-margin) ${marginZoomed}px, transparent ${marginZoomed}px, transparent calc(100% - ${marginZoomed}px), var(--ruler-margin) calc(100% - ${marginZoomed}px)), linear-gradient(to right, var(--text-muted) 1px, transparent 1px)`,
+                backgroundSize: `100% 100%, ${cmPx}px 7px`,
+                backgroundRepeat: "no-repeat, repeat-x",
+                backgroundPosition: "0 0, 0 100%",
+              }}
+            />
+          </div>
+        )}
+
+        <div
+          className="page-outer"
+          style={{
+            width: pageW * zoomFactor,
+            height: pages * pageH * zoomFactor,
+          }}
+        >
+          <div
+            ref={pageRef}
+            className="tiptap-document-page"
+            style={{
+              width: pageW,
+              minHeight: pages * pageH,
+              padding: marginPx,
+              transform: `scale(${zoomFactor})`,
+              backgroundImage: `repeating-linear-gradient(to bottom, transparent 0, transparent ${
+                pageH - 2
+              }px, #cfd6e2 ${pageH - 2}px, #cfd6e2 ${pageH}px)`,
+            }}
+          >
+            <EditorContent editor={editor} />
+          </div>
         </div>
-      </main>
+      </div>
+
+      {/* ------------------- BARRE D'ETAT ------------------- */}
+
+      <footer className="statusbar">
+        <div className="sb-left">
+          <span>
+            Page {currentPage} sur {pages}
+          </span>
+
+          <span>{stats.words} mot{stats.words > 1 ? "s" : ""}</span>
+
+          <span>Français (France)</span>
+
+          {readOnly && <span className="sb-badge">Lecture seule</span>}
+        </div>
+
+        <div className="sb-right">
+          <button
+            type="button"
+            className={!readingMode ? "sb-mode active" : "sb-mode"}
+            onClick={() => setReadingMode(false)}
+            title="Mode page"
+            aria-label="Mode page"
+          >
+            <FileText size={15} />
+          </button>
+
+          <button
+            type="button"
+            className={readingMode ? "sb-mode active" : "sb-mode"}
+            onClick={() => setReadingMode(true)}
+            title="Mode lecture"
+            aria-label="Mode lecture"
+          >
+            <BookOpen size={15} />
+          </button>
+
+          <button
+            type="button"
+            className="sb-mode"
+            onClick={() => setZoom((value) => Math.max(50, value - 10))}
+            aria-label="Réduire le zoom"
+          >
+            <ZoomOut size={15} />
+          </button>
+
+          <input
+            type="range"
+            min="50"
+            max="200"
+            step="10"
+            value={zoom}
+            onChange={(event) => setZoom(Number(event.target.value))}
+            aria-label="Zoom"
+          />
+
+          <button
+            type="button"
+            className="sb-mode"
+            onClick={() => setZoom((value) => Math.min(200, value + 10))}
+            aria-label="Agrandir le zoom"
+          >
+            <ZoomIn size={15} />
+          </button>
+
+          <button
+            type="button"
+            className="sb-zoom"
+            onClick={() => setZoom(100)}
+            title="Revenir à 100 %"
+          >
+            {zoom} %
+          </button>
+        </div>
+      </footer>
+
+      {/* ------------------- FICHIER (backstage) ------------------- */}
+
+      {showBackstage && (
+        <div className="backstage">
+          <nav className="backstage-nav">
+            <button
+              type="button"
+              className="backstage-back"
+              onClick={() => setShowBackstage(false)}
+              aria-label="Retour au document"
+            >
+              <ArrowLeft size={20} />
+            </button>
+
+            <button type="button" className="on">
+              <Info size={17} />
+              Informations
+            </button>
+
+            {!readOnly && (
+              <button
+                type="button"
+                onClick={backstageAction(() => handleSave())}
+                disabled={!ready}
+              >
+                <Save size={17} />
+                Enregistrer
+              </button>
+            )}
+
+            {!readOnly && (
+              <button
+                type="button"
+                onClick={backstageAction(() => fileInputRef.current?.click())}
+              >
+                <FileUp size={17} />
+                Importer Word ou PDF
+              </button>
+            )}
+
+            <button type="button" onClick={backstageAction(handleDownloadPDF)}>
+              <Download size={17} />
+              Exporter en PDF
+            </button>
+
+            <button type="button" onClick={backstageAction(handlePrint)}>
+              <Printer size={17} />
+              Imprimer
+            </button>
+
+            <button
+              type="button"
+              onClick={backstageAction(() => setShowHistory(true))}
+            >
+              <History size={17} />
+              Historique des versions
+            </button>
+
+            {onShare && (
+              <button type="button" onClick={backstageAction(onShare)}>
+                <Share2 size={17} />
+                Partager
+              </button>
+            )}
+
+            <button
+              type="button"
+              className="backstage-close"
+              onClick={backstageAction(() => onClose?.())}
+            >
+              <X size={17} />
+              Fermer le document
+            </button>
+          </nav>
+
+          <section className="backstage-pane">
+            <h2>Informations</h2>
+            <h3>{title || "Document sans titre"}</h3>
+
+            <dl className="info-grid">
+              <dt>Accès</dt>
+              <dd>{permissionLabel}</dd>
+
+              <dt>Dernière modification</dt>
+              <dd>
+                {formatDateTime(
+                  documentProp?.updated_at || documentProp?.created_at
+                )}
+              </dd>
+
+              <dt>Création</dt>
+              <dd>{formatDateTime(documentProp?.created_at)}</dd>
+
+              <dt>Pages</dt>
+              <dd>{pages}</dd>
+
+              <dt>Mots</dt>
+              <dd>{stats.words}</dd>
+
+              <dt>Format</dt>
+              <dd>
+                {pageDef.label} ({pageDef.dim}),{" "}
+                {landscape ? "paysage" : "portrait"}
+              </dd>
+
+              <dt>Collaborateurs en ligne</dt>
+              <dd>{collaborators}</dd>
+            </dl>
+          </section>
+        </div>
+      )}
+
+      {/* ------------------- STATISTIQUES ------------------- */}
+
+      {showStats && (
+        <div className="modal-overlay" onClick={() => setShowStats(false)}>
+          <div
+            className="share-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div>
+                <h2>Statistiques</h2>
+                <p>Contenu du document</p>
+              </div>
+
+              <button
+                className="modal-close"
+                onClick={() => setShowStats(false)}
+                aria-label="Fermer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <dl className="info-grid">
+              <dt>Pages</dt>
+              <dd>{pages}</dd>
+
+              <dt>Mots</dt>
+              <dd>{stats.words}</dd>
+
+              <dt>Caractères (avec espaces)</dt>
+              <dd>{stats.chars}</dd>
+
+              <dt>Caractères (sans espaces)</dt>
+              <dd>{stats.charsNoSpaces}</dd>
+
+              <dt>Paragraphes</dt>
+              <dd>{stats.paragraphs}</dd>
+            </dl>
+          </div>
+        </div>
+      )}
 
       {/* ------------------- HISTORIQUE ------------------- */}
 
@@ -1447,6 +2201,24 @@ export default function TextEditor({
           onRestore={handleRestoreVersion}
         />
       )}
+
+      {/* ------------------- CHAMPS FICHIER CACHES ------------------- */}
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        className="hidden-input"
+        onChange={handleImportFile}
+      />
+
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden-input"
+        onChange={handleImageFile}
+      />
     </div>
   );
 }

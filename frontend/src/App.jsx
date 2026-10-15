@@ -6,7 +6,7 @@ import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
 
 import {
     FileText,
-    LayoutDashboard,
+    Home,
     Star,
     Trash2,
     Plus,
@@ -22,10 +22,11 @@ import {
     X,
     Palette,
     RotateCcw,
-    Clock,
     Check,
     Zap,
-    Pencil
+    Pencil,
+    FolderOpen,
+    Clock
 } from "lucide-react";
 
 import { useAuth } from "./AuthContext";
@@ -44,39 +45,118 @@ import "./extras.css";
 const API_URL = "http://localhost:5000/api";
 
 /* =========================================================
+   MODELES DE DOCUMENTS
+========================================================= */
+
+const para = (text = "") => ({
+    type: "paragraph",
+    content: text ? [{ type: "text", text }] : []
+});
+
+const heading = (level, text) => ({
+    type: "heading",
+    attrs: { level },
+    content: [{ type: "text", text }]
+});
+
+const bullets = (items) => ({
+    type: "bulletList",
+    content: items.map((text) => ({
+        type: "listItem",
+        content: [para(text)]
+    }))
+});
+
+const tasks = (items) => ({
+    type: "taskList",
+    content: items.map((text) => ({
+        type: "taskItem",
+        attrs: { checked: false },
+        content: [para(text)]
+    }))
+});
+
+const TEMPLATES = [
+    {
+        id: "blank",
+        label: "Document vierge",
+        base: "Nouveau document",
+        content: null
+    },
+    {
+        id: "letter",
+        label: "Lettre",
+        base: "Lettre",
+        content: [
+            para("[Votre nom]"),
+            para("[Votre adresse]"),
+            para(),
+            para("[Ville], le [date]"),
+            para(),
+            para("Objet : [objet de la lettre]"),
+            para(),
+            para("Madame, Monsieur,"),
+            para(),
+            para("[Corps de la lettre]"),
+            para(),
+            para(
+                "Veuillez agréer, Madame, Monsieur, l'expression de mes salutations distinguées."
+            ),
+            para(),
+            para("[Signature]")
+        ]
+    },
+    {
+        id: "report",
+        label: "Rapport",
+        base: "Rapport",
+        content: [
+            heading(1, "Titre du rapport"),
+            para("Auteur — date"),
+            heading(2, "1. Introduction"),
+            para("[Présentez le contexte et les objectifs.]"),
+            heading(2, "2. Développement"),
+            para("[Détaillez votre travail.]"),
+            heading(2, "3. Conclusion"),
+            para("[Résumez les résultats.]")
+        ]
+    },
+    {
+        id: "meeting",
+        label: "Compte rendu",
+        base: "Compte rendu de réunion",
+        content: [
+            heading(1, "Compte rendu de réunion"),
+            para("Date :"),
+            para("Participants :"),
+            heading(2, "Ordre du jour"),
+            bullets(["Point 1", "Point 2"]),
+            heading(2, "Décisions"),
+            para(),
+            heading(2, "Actions à suivre"),
+            tasks(["Action 1", "Action 2"])
+        ]
+    }
+];
+
+/* =========================================================
    OUTILS
 ========================================================= */
 
 const NAV_ITEMS = [
-    { id: "dashboard", label: "Tableau de bord", icon: LayoutDashboard },
-    { id: "all", label: "Documents", icon: FileText },
+    { id: "home", label: "Accueil", icon: Home },
+    { id: "all", label: "Mes documents", icon: FolderOpen },
+    { id: "shared", label: "Partagés avec moi", icon: Users },
     { id: "favorites", label: "Favoris", icon: Star },
     { id: "trash", label: "Corbeille", icon: Trash2 }
 ];
 
-const VIEW_META = {
-    dashboard: {
-        eyebrow: "VUE D'ENSEMBLE",
-        subtitle: "Retrouvez l'essentiel de votre activité, en un coup d'œil."
-    },
-    all: {
-        eyebrow: "VOTRE ESPACE",
-        line1: "Mes",
-        line2: "documents",
-        subtitle: "Créez, organisez et modifiez vos documents en temps réel."
-    },
-    favorites: {
-        eyebrow: "ACCÈS RAPIDE",
-        line1: "Vos",
-        line2: "favoris",
-        subtitle: "Vos documents importants, toujours à portée de main."
-    },
-    trash: {
-        eyebrow: "DOCUMENTS SUPPRIMÉS",
-        line1: "La",
-        line2: "corbeille",
-        subtitle: "Restaurez un document ou supprimez-le définitivement."
-    }
+const VIEW_TITLES = {
+    home: "Accueil",
+    all: "Mes documents",
+    shared: "Partagés avec moi",
+    favorites: "Favoris",
+    trash: "Corbeille"
 };
 
 function getDocumentTitle(document) {
@@ -182,13 +262,13 @@ function Workspace() {
 
     const [documents, setDocuments] = useState([]);
     const [trashDocs, setTrashDocs] = useState([]);
-    const [selectedId, setSelectedId] = useState(null);
-    const [view, setView] = useState("all");
+    const [openId, setOpenId] = useState(null);
+    const [shareId, setShareId] = useState(null);
+    const [view, setView] = useState("home");
     const [search, setSearch] = useState("");
     const [loading, setLoading] = useState(true);
 
-    const [showShare, setShowShare] = useState(false);
-    const [menuOpen, setMenuOpen] = useState(false);
+    const [sidebarOpen, setSidebarOpen] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [online, setOnline] = useState(navigator.onLine);
 
@@ -260,9 +340,9 @@ function Workspace() {
 
         const onKeyDown = (event) => {
             if (event.key === "Escape") {
-                setShowShare(false);
+                setShareId(null);
                 setShowSettings(false);
-                setMenuOpen(false);
+                setSidebarOpen(false);
                 setMenu(null);
                 setRenameTarget(null);
             }
@@ -279,57 +359,54 @@ function Workspace() {
         };
     }, []);
 
-    /* ---------------- DOCUMENT SELECTIONNE ---------------- */
-
-    const selectedDocument =
-        documents.find((item) => item.id === selectedId) ||
-        documents[0] ||
-        null;
-
-    const selectedTrash =
-        trashDocs.find((item) => item.id === selectedId) || null;
+    const openDoc = documents.find((item) => item.id === openId) || null;
+    const shareDoc = documents.find((item) => item.id === shareId) || null;
 
     /* ---------------- CREATION ---------------- */
 
-    const createDocument = async () => {
+    const uniqueTitle = (base) => {
+        const existing = new Set(
+            [...documents, ...trashDocs].map((item) =>
+                String(item.content?.title || "")
+                    .trim()
+                    .toLocaleLowerCase()
+            )
+        );
+
+        let number = 1;
+
+        while (existing.has(`${base} ${number}`.toLocaleLowerCase())) {
+            number += 1;
+        }
+
+        return `${base} ${number}`;
+    };
+
+    const createDocument = async (template = TEMPLATES[0]) => {
         try {
-            const existingTitles = new Set(
-                [...documents, ...trashDocs].map((item) =>
-                    String(item.content?.title || "")
-                        .trim()
-                        .toLocaleLowerCase()
-                )
-            );
-
-            let titleNumber = 1;
-
-            while (
-                existingTitles.has(
-                    `nouveau document ${titleNumber}`.toLocaleLowerCase()
-                )
-            ) {
-                titleNumber += 1;
-            }
-
-            const documentTitle = `Nouveau document ${titleNumber}`;
+            const documentTitle = uniqueTitle(template.base);
             const documentId = `document-${Date.now()}-${Math.random()
                 .toString(36)
                 .slice(2, 7)}`;
 
+            const content = template.content
+                ? {
+                      type: "doc",
+                      title: documentTitle,
+                      content: template.content
+                  }
+                : { title: documentTitle, text: "" };
+
             const response = await axios.post(
                 `${API_URL}/documents`,
-                {
-                    id: documentId,
-                    content: { title: documentTitle, text: "" }
-                },
+                { id: documentId, content },
                 authConfig
             );
 
             const newDocument = { ...response.data, is_favorite: false };
 
             setDocuments((previous) => [newDocument, ...previous]);
-            setSelectedId(newDocument.id);
-            setView("all");
+            setOpenId(newDocument.id);
             notify("Document créé");
         } catch (error) {
             console.error("Erreur création document :", error);
@@ -516,16 +593,12 @@ function Workspace() {
         });
     };
 
-    const menuItem =
-        menu &&
-        (view === "trash" ? trashDocs : documents).find(
-            (entry) => entry.id === menu.id
-        );
+    const menuItem = menu && documents.find((entry) => entry.id === menu.id);
 
     const changeView = (nextView) => {
         setView(nextView);
         setSearch("");
-        setMenuOpen(false);
+        setSidebarOpen(false);
     };
 
     /* ---------------- DONNEES CALCULEES ---------------- */
@@ -535,24 +608,50 @@ function Workspace() {
         [documents]
     );
 
+    const ownedDocs = useMemo(
+        () => documents.filter((item) => item.permission === "owner"),
+        [documents]
+    );
+
+    const sharedDocs = useMemo(
+        () => documents.filter((item) => item.permission !== "owner"),
+        [documents]
+    );
+
+    const searching = search.trim().length > 0;
+
     const visibleList = useMemo(() => {
-        const base =
-            view === "trash"
-                ? trashDocs
-                : view === "favorites"
-                ? favoriteDocs
-                : documents;
+        let base = documents;
+
+        if (view === "trash") base = trashDocs;
+        else if (view === "favorites") base = favoriteDocs;
+        else if (view === "shared") base = sharedDocs;
+        else if (view === "all") base = ownedDocs;
+        else if (view === "home" && !searching) base = documents.slice(0, 8);
 
         const term = search.trim().toLowerCase();
 
         return base.filter((item) =>
             getDocumentTitle(item).toLowerCase().includes(term)
         );
-    }, [view, documents, trashDocs, favoriteDocs, search]);
+    }, [
+        view,
+        documents,
+        trashDocs,
+        favoriteDocs,
+        sharedDocs,
+        ownedDocs,
+        search,
+        searching
+    ]);
 
-    const sharedCount = documents.filter(
-        (item) => item.permission !== "owner"
-    ).length;
+    const counts = {
+        home: null,
+        all: ownedDocs.length,
+        shared: sharedDocs.length,
+        favorites: favoriteDocs.length,
+        trash: trashDocs.length
+    };
 
     const lastActivity = documents.length
         ? formatRelativeDate(documents[0].updated_at || documents[0].created_at)
@@ -562,355 +661,224 @@ function Workspace() {
     const initial = user?.name?.charAt(0)?.toUpperCase() || "U";
     const isDark = resolvedMode === "dark";
 
-    const meta = VIEW_META[view];
-    const line1 = view === "dashboard" ? "Bonjour," : meta.line1;
-    const line2 = view === "dashboard" ? firstName || "vous" : meta.line2;
-
-    const counts = {
-        dashboard: null,
-        all: documents.length,
-        favorites: favoriteDocs.length,
-        trash: trashDocs.length
+    const emptyMessages = {
+        home: "Aucun document pour le moment. Choisissez un modèle ci-dessus.",
+        all: "Vous n'avez pas encore créé de document.",
+        shared: "Aucun document n'a été partagé avec vous.",
+        favorites:
+            "Aucun favori. Utilisez le menu « ⋯ » d'un document pour en ajouter.",
+        trash: "La corbeille est vide."
     };
 
-    /* ---------------- BLOCS REUTILISABLES ---------------- */
+    /* ---------------- LIGNE DE DOCUMENT ---------------- */
 
-    const renderDocCard = (item, index) => (
-        <button
+    const renderRow = (item, index) => (
+        <div
             key={item.id}
-            className="doc-card"
-            style={{ "--i": index }}
+            className="file-row"
+            role="button"
+            tabIndex={0}
+            style={{ "--i": Math.min(index, 12) }}
             onClick={() => {
-                setSelectedId(item.id);
-                setView("all");
+                if (view !== "trash") setOpenId(item.id);
+            }}
+            onKeyDown={(event) => {
+                if (
+                    view !== "trash" &&
+                    (event.key === "Enter" || event.key === " ")
+                ) {
+                    event.preventDefault();
+                    setOpenId(item.id);
+                }
             }}
         >
-            <div className="doc-card-top">
-                <div className="document-item-icon">
-                    <FileText size={18} />
-                </div>
-
-                {item.is_favorite && <Star size={16} className="fav-star" />}
-            </div>
-
-            <strong>{getDocumentTitle(item)}</strong>
-
-            <span className="meta">
-                {getPermissionLabel(item.permission)}
-                {" · "}
-                {formatRelativeDate(item.updated_at || item.created_at)}
+            <span className="file-icon">
+                <FileText size={19} />
             </span>
-        </button>
-    );
 
-    const emptyMessages = {
-        all: {
-            title: "Aucun document trouvé",
-            text: search
-                ? "Essayez avec un autre mot-clé."
-                : "Créez votre premier document collaboratif."
-        },
-        favorites: {
-            title: "Aucun favori",
-            text: search
-                ? "Essayez avec un autre mot-clé."
-                : "Cliquez sur « ⋯ » puis « Ajouter aux favoris » sur un document."
-        },
-        trash: {
-            title: "La corbeille est vide",
-            text: search
-                ? "Essayez avec un autre mot-clé."
-                : "Les documents supprimés apparaîtront ici."
-        }
-    };
+            <span className="file-name">
+                <strong>{getDocumentTitle(item)}</strong>
+
+                {view !== "trash" && item.is_favorite && (
+                    <Star size={13} className="fav-star" />
+                )}
+            </span>
+
+            <span className="file-date">
+                {view === "trash"
+                    ? `Supprimé ${formatRelativeDate(
+                          item.deleted_at
+                      ).toLowerCase()}`
+                    : formatRelativeDate(item.updated_at || item.created_at)}
+            </span>
+
+            <span className={`file-perm ${item.permission}`}>
+                {getPermissionLabel(item.permission)}
+            </span>
+
+            <span className="file-actions">
+                {view === "trash" ? (
+                    <>
+                        <button
+                            type="button"
+                            className="row-btn"
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                restoreDocument(item);
+                            }}
+                            title="Restaurer"
+                        >
+                            <RotateCcw size={15} />
+                            Restaurer
+                        </button>
+
+                        <button
+                            type="button"
+                            className="row-btn danger"
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                deleteForever(item);
+                            }}
+                            title="Supprimer définitivement"
+                            aria-label="Supprimer définitivement"
+                        >
+                            <Trash2 size={15} />
+                        </button>
+                    </>
+                ) : (
+                    <button
+                        type="button"
+                        className="row-menu"
+                        aria-label="Actions"
+                        onClick={(event) => openMenu(event, item)}
+                    >
+                        <MoreHorizontal size={18} />
+                    </button>
+                )}
+            </span>
+        </div>
+    );
 
     /* ---------------- RENDER ---------------- */
 
     return (
-        <div className="app-shell">
-            {/* ================= BARRE DE NAVIGATION ================= */}
+        <>
+            {openDoc ? (
+                <TextEditor
+                    key={openDoc.id}
+                    document={openDoc}
+                    documentId={openDoc.id}
+                    documentTitle={getDocumentTitle(openDoc)}
+                    token={token}
+                    readOnly={openDoc.permission === "viewer"}
+                    onSaved={() => loadDocuments(true)}
+                    onClose={() => setOpenId(null)}
+                    onShare={
+                        openDoc.permission === "owner"
+                            ? () => setShareId(openDoc.id)
+                            : undefined
+                    }
+                />
+            ) : (
+                <div className="start-shell">
+                    {sidebarOpen && (
+                        <div
+                            className="sidebar-backdrop"
+                            onClick={() => setSidebarOpen(false)}
+                        />
+                    )}
 
-            <header className="topnav-wrap">
-                <nav className="topnav">
-                    <div className="nav-brand" translate="no">
-                        <span className="brand-mark">
-                            <Logo size={20} />
-                        </span>
-                        <strong>CollabSpace</strong>
-                    </div>
+                    {/* ================= MENU GAUCHE ================= */}
 
-                    <div className={menuOpen ? "nav-links open" : "nav-links"}>
-                        {NAV_ITEMS.map((item) => {
-                            const Icon = item.icon;
-
-                            return (
-                                <button
-                                    key={item.id}
-                                    className={
-                                        view === item.id
-                                            ? "nav-link active"
-                                            : "nav-link"
-                                    }
-                                    onClick={() => changeView(item.id)}
-                                >
-                                    <Icon size={16} />
-                                    <span>{item.label}</span>
-
-                                    {counts[item.id] !== null && (
-                                        <em className="nav-count">
-                                            {counts[item.id]}
-                                        </em>
-                                    )}
-                                </button>
-                            );
-                        })}
-                    </div>
-
-                    <div className="nav-actions">
-                        <span
-                            className={
-                                online ? "nav-status" : "nav-status offline"
-                            }
-                            title={online ? "Connecté" : "Hors-ligne"}
-                        >
-                            <span className="status-dot" />
-                        </span>
-
-                        <button
-                            className="nav-icon"
-                            onClick={() =>
-                                update({ mode: isDark ? "light" : "dark" })
-                            }
-                            title={
-                                isDark
-                                    ? "Passer au mode clair"
-                                    : "Passer au mode sombre"
-                            }
-                            aria-label="Changer de thème"
-                        >
-                            <span key={resolvedMode} className="theme-icon">
-                                {isDark ? (
-                                    <Sun size={17} />
-                                ) : (
-                                    <Moon size={17} />
-                                )}
+                    <aside
+                        className={sidebarOpen ? "start-nav open" : "start-nav"}
+                    >
+                        <div className="start-brand" translate="no">
+                            <span className="start-brand-mark">
+                                <Logo size={22} />
                             </span>
-                        </button>
 
-                        <button
-                            className="nav-icon"
-                            onClick={() => setShowSettings(true)}
-                            title="Personnaliser l'interface"
-                            aria-label="Personnaliser l'interface"
-                        >
-                            <Palette size={17} />
-                        </button>
-
-                        <div className="user-chip" title={user?.email}>
-                            <span className="user-chip-avatar">{initial}</span>
-                            <span className="user-chip-name">
-                                {user?.name}
-                            </span>
+                            <div>
+                                <strong>CollabSpace</strong>
+                                <span>Documents en équipe</span>
+                            </div>
                         </div>
 
                         <button
-                            className="nav-logout"
-                            onClick={handleLogout}
-                            title="Se déconnecter"
-                            aria-label="Se déconnecter"
+                            className="start-new"
+                            onClick={() => createDocument(TEMPLATES[0])}
                         >
-                            <LogOut size={16} />
-                            <span>Déconnexion</span>
+                            <Plus size={18} />
+                            Nouveau document
                         </button>
 
-                        <button
-                            className="nav-icon menu-toggle"
-                            onClick={() => setMenuOpen((open) => !open)}
-                            aria-label="Menu"
-                        >
-                            {menuOpen ? <X size={18} /> : <Menu size={18} />}
-                        </button>
-                    </div>
-                </nav>
-            </header>
+                        <nav className="start-links">
+                            {NAV_ITEMS.map((item) => {
+                                const Icon = item.icon;
 
-            {/* ================= CONTENU ================= */}
-
-            <main className="page">
-                {/* ---------- HERO ---------- */}
-
-                <section className="hero" key={view}>
-                    <div className="hero-copy">
-                        <span className="eyebrow">{meta.eyebrow}</span>
-
-                        <h1>
-                            <span>{line1}</span>
-                            <span className="faded">{line2}</span>
-                        </h1>
-
-                        <p className="hero-subtitle">{meta.subtitle}</p>
-
-                        <div className="hero-meta">
-                            <span>
-                                {online ? "TEMPS RÉEL ACTIF" : "HORS-LIGNE"}
-                            </span>
-
-                            <i className="meta-line">
-                                <b />
-                                <b />
-                            </i>
-                        </div>
-
-                        <div className="hero-actions">
-                            {view === "trash" ? (
-                                <button
-                                    className="danger-button pill"
-                                    onClick={emptyTrash}
-                                    disabled={trashDocs.length === 0}
-                                >
-                                    <Trash2 size={17} />
-                                    Vider la corbeille
-                                </button>
-                            ) : (
-                                <button
-                                    className="new-document-button"
-                                    onClick={createDocument}
-                                >
-                                    <Plus size={18} />
-                                    Nouveau document
-                                </button>
-                            )}
-
-                            <div className="hero-switch" role="tablist">
-                                {[
-                                    { id: "all", label: "Documents" },
-                                    { id: "favorites", label: "Favoris" },
-                                    { id: "trash", label: "Corbeille" }
-                                ].map((tab) => (
+                                return (
                                     <button
-                                        key={tab.id}
-                                        role="tab"
-                                        aria-selected={view === tab.id}
+                                        key={item.id}
                                         className={
-                                            view === tab.id ? "active" : ""
+                                            view === item.id ? "on" : undefined
                                         }
-                                        onClick={() => changeView(tab.id)}
+                                        onClick={() => changeView(item.id)}
                                     >
-                                        {tab.label}
+                                        <Icon size={18} />
+                                        <span>{item.label}</span>
+
+                                        {counts[item.id] !== null && (
+                                            <em>{counts[item.id]}</em>
+                                        )}
                                     </button>
-                                ))}
-                            </div>
+                                );
+                            })}
+                        </nav>
 
-                            <span className="sparkles" aria-hidden="true">
-                                ✦ ✦ ✦
-                            </span>
-                        </div>
-                    </div>
+                        <div className="start-bottom">
+                            <button
+                                className="start-link-btn"
+                                onClick={() => {
+                                    setShowSettings(true);
+                                    setSidebarOpen(false);
+                                }}
+                            >
+                                <Palette size={18} />
+                                Personnalisation
+                            </button>
 
-                    <div className="hero-visual">
-                        <div className="hv-stripes">
-                            <div className="hv-logo">
-                                <Logo size={30} />
-                            </div>
-                        </div>
+                            <div className="start-user">
+                                <span className="start-avatar">{initial}</span>
 
-                        <div className="hv-main">
-                            <span className="hv-label">Documents totaux</span>
-
-                            <strong className="hv-number">
-                                {documents.length}
-                            </strong>
-
-                            <div className="hv-row">
-                                <div className="hv-tile">
-                                    <Users size={16} />
-                                    <strong>{sharedCount}</strong>
-                                    <span>Partagés avec moi</span>
-                                </div>
-
-                                <div className="hv-tile">
-                                    <Clock size={16} />
-                                    <strong className="small">
-                                        {lastActivity}
-                                    </strong>
-                                    <span>Dernière activité</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
-                {/* ---------- TABLEAU DE BORD ---------- */}
-
-                {view === "dashboard" && (
-                    <>
-                        <section className="dashboard-section">
-                            <h2>Récemment modifiés</h2>
-
-                            {loading ? (
-                                <div className="doc-grid">
-                                    {[0, 1, 2].map((item) => (
-                                        <div
-                                            key={item}
-                                            className="skeleton-row"
-                                            style={{ height: 130 }}
-                                        />
-                                    ))}
-                                </div>
-                            ) : documents.length === 0 ? (
-                                <div className="section-empty">
-                                    Aucun document pour le moment.
-                                </div>
-                            ) : (
-                                <div className="doc-grid">
-                                    {documents.slice(0, 6).map(renderDocCard)}
-                                </div>
-                            )}
-                        </section>
-
-                        <section className="dashboard-section">
-                            <h2>Mes favoris</h2>
-
-                            {favoriteDocs.length === 0 ? (
-                                <div className="section-empty">
-                                    Aucun favori. Utilisez le menu « ⋯ » d'un
-                                    document pour en ajouter.
-                                </div>
-                            ) : (
-                                <div className="doc-grid">
-                                    {favoriteDocs
-                                        .slice(0, 6)
-                                        .map(renderDocCard)}
-                                </div>
-                            )}
-                        </section>
-                    </>
-                )}
-
-                {/* ---------- LISTE + EDITEUR / CORBEILLE ---------- */}
-
-                {view !== "dashboard" && (
-                    <div className="documents-workspace">
-                        <section className="documents-card">
-                            <div className="documents-card-header">
                                 <div>
-                                    <h2>
-                                        {view === "trash"
-                                            ? "Documents supprimés"
-                                            : view === "favorites"
-                                            ? "Documents favoris"
-                                            : "Documents récents"}
-                                    </h2>
-                                    <span>
-                                        {visibleList.length} document
-                                        {visibleList.length > 1 ? "s" : ""}
-                                    </span>
+                                    <strong>{user?.name}</strong>
+                                    <span>{user?.email}</span>
                                 </div>
-
-                                <MoreHorizontal size={19} />
                             </div>
 
-                            <div className="search-box">
+                            <button
+                                className="start-logout"
+                                onClick={handleLogout}
+                            >
+                                <LogOut size={17} />
+                                Déconnexion
+                            </button>
+                        </div>
+                    </aside>
+
+                    {/* ================= CONTENU ================= */}
+
+                    <main className="start-main">
+                        <header className="start-top">
+                            <button
+                                className="icon-button menu-toggle"
+                                onClick={() => setSidebarOpen(true)}
+                                aria-label="Ouvrir le menu"
+                            >
+                                <Menu size={20} />
+                            </button>
+
+                            <div className="start-search">
                                 <Search size={16} />
 
                                 <input
@@ -921,261 +889,214 @@ function Workspace() {
                                     }
                                     placeholder="Rechercher un document..."
                                 />
+
+                                {search && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setSearch("")}
+                                        aria-label="Effacer la recherche"
+                                    >
+                                        <X size={15} />
+                                    </button>
+                                )}
                             </div>
 
-                            {loading ? (
-                                <div className="document-list">
-                                    {[0, 1, 2, 3, 4].map((item) => (
-                                        <div
-                                            key={item}
-                                            className="skeleton-row"
-                                        />
-                                    ))}
-                                </div>
-                            ) : visibleList.length === 0 ? (
-                                <div className="documents-empty">
-                                    {view === "trash" ? (
-                                        <Trash2 size={38} />
-                                    ) : view === "favorites" ? (
-                                        <Star size={38} />
-                                    ) : (
-                                        <FileText size={38} />
-                                    )}
+                            <div className="start-top-actions">
+                                <span
+                                    className={
+                                        online
+                                            ? "sync-pill"
+                                            : "sync-pill offline"
+                                    }
+                                >
+                                    <span className="sync-dot" />
+                                    {online ? "Connecté" : "Hors-ligne"}
+                                </span>
 
-                                    <h3>{emptyMessages[view].title}</h3>
+                                <button
+                                    className="icon-button"
+                                    onClick={() =>
+                                        update({
+                                            mode: isDark ? "light" : "dark"
+                                        })
+                                    }
+                                    title={
+                                        isDark
+                                            ? "Passer au mode clair"
+                                            : "Passer au mode sombre"
+                                    }
+                                    aria-label="Changer de thème"
+                                >
+                                    <span
+                                        key={resolvedMode}
+                                        className="theme-icon"
+                                    >
+                                        {isDark ? (
+                                            <Sun size={19} />
+                                        ) : (
+                                            <Moon size={19} />
+                                        )}
+                                    </span>
+                                </button>
 
-                                    <p>{emptyMessages[view].text}</p>
+                                <button
+                                    className="icon-button"
+                                    onClick={() => setShowSettings(true)}
+                                    title="Personnaliser l'interface"
+                                    aria-label="Personnaliser l'interface"
+                                >
+                                    <Palette size={19} />
+                                </button>
 
-                                    {view === "all" && !search && (
-                                        <button onClick={createDocument}>
-                                            <Plus size={16} />
-                                            Créer un document
-                                        </button>
-                                    )}
-                                </div>
-                            ) : (
-                                <div className="document-list">
-                                    {visibleList.map((item, index) => {
-                                        const isSelected =
-                                            view === "trash"
-                                                ? selectedTrash?.id === item.id
-                                                : selectedDocument?.id ===
-                                                  item.id;
+                                <button
+                                    className="top-logout"
+                                    onClick={handleLogout}
+                                    title="Se déconnecter"
+                                >
+                                    <LogOut size={16} />
+                                    <span>Déconnexion</span>
+                                </button>
+                            </div>
+                        </header>
 
-                                        return (
-                                            <div
-                                                key={item.id}
-                                                role="button"
-                                                tabIndex={0}
-                                                style={{
-                                                    "--i": Math.min(index, 12)
-                                                }}
-                                                className={
-                                                    isSelected
-                                                        ? "document-item selected"
-                                                        : "document-item"
-                                                }
-                                                onClick={() =>
-                                                    setSelectedId(item.id)
-                                                }
-                                                onKeyDown={(event) => {
-                                                    if (
-                                                        event.key === "Enter" ||
-                                                        event.key === " "
-                                                    ) {
-                                                        event.preventDefault();
-                                                        setSelectedId(item.id);
-                                                    }
-                                                }}
-                                            >
-                                                <div className="document-item-icon">
-                                                    <FileText size={17} />
-                                                </div>
+                        <div className="start-content" key={view}>
+                            {view === "home" && !searching && (
+                                <>
+                                    <section className="start-hero">
+                                        <h1>
+                                            Bonjour{firstName ? "," : ""}{" "}
+                                            <span>{firstName}</span>
+                                        </h1>
 
-                                                <div className="document-item-content">
-                                                    <strong>
-                                                        {getDocumentTitle(item)}
-                                                    </strong>
+                                        <p>
+                                            Que souhaitez-vous créer
+                                            aujourd'hui ?
+                                        </p>
 
-                                                    <span>
-                                                        {view === "trash"
-                                                            ? `Supprimé · ${formatRelativeDate(
-                                                                  item.deleted_at
-                                                              ).toLowerCase()}`
-                                                            : `${getPermissionLabel(
-                                                                  item.permission
-                                                              )} · ${formatRelativeDate(
-                                                                  item.updated_at ||
-                                                                      item.created_at
-                                                              )}`}
-                                                    </span>
-                                                </div>
+                                        <div className="stats-strip">
+                                            <span>
+                                                <FileText size={15} />
+                                                {documents.length} document
+                                                {documents.length > 1
+                                                    ? "s"
+                                                    : ""}
+                                            </span>
 
-                                                {view !== "trash" &&
-                                                    item.is_favorite && (
-                                                        <Star
-                                                            size={15}
-                                                            className="fav-star"
-                                                        />
-                                                    )}
+                                            <span>
+                                                <Users size={15} />
+                                                {sharedDocs.length} partagé
+                                                {sharedDocs.length > 1
+                                                    ? "s"
+                                                    : ""}
+                                            </span>
 
+                                            <span>
+                                                <Clock size={15} />
+                                                {lastActivity}
+                                            </span>
+                                        </div>
+                                    </section>
+
+                                    <section className="templates">
+                                        <h2>Créer</h2>
+
+                                        <div className="template-row">
+                                            {TEMPLATES.map((template, index) => (
                                                 <button
-                                                    type="button"
-                                                    className="item-menu-button"
-                                                    aria-label="Actions"
-                                                    onClick={(event) =>
-                                                        openMenu(event, item)
+                                                    key={template.id}
+                                                    className="template"
+                                                    style={{ "--i": index }}
+                                                    onClick={() =>
+                                                        createDocument(template)
                                                     }
                                                 >
-                                                    <MoreHorizontal
-                                                        size={17}
-                                                    />
+                                                    <span className="tpl-page">
+                                                        {template.id ===
+                                                        "blank" ? (
+                                                            <Plus size={34} />
+                                                        ) : (
+                                                            <>
+                                                                <i />
+                                                                <i />
+                                                                <i />
+                                                                <i />
+                                                            </>
+                                                        )}
+                                                    </span>
+
+                                                    <strong>
+                                                        {template.label}
+                                                    </strong>
                                                 </button>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
+                                            ))}
+                                        </div>
+                                    </section>
+                                </>
                             )}
-                        </section>
 
-                        {/* ---------- PANNEAU DROIT ---------- */}
+                            <section className="file-section">
+                                <div className="file-section-head">
+                                    <h2>
+                                        {searching
+                                            ? "Résultats de la recherche"
+                                            : view === "home"
+                                            ? "Récents"
+                                            : VIEW_TITLES[view]}
+                                    </h2>
 
-                        <section className="editor-card">
-                            {view === "trash" ? (
-                                selectedTrash ? (
-                                    <div className="trash-pane">
-                                        <div className="editor-empty-icon">
-                                            <Trash2 size={36} />
-                                        </div>
+                                    {view === "trash" ? (
+                                        <button
+                                            className="danger-button pill"
+                                            onClick={emptyTrash}
+                                            disabled={trashDocs.length === 0}
+                                        >
+                                            <Trash2 size={16} />
+                                            Vider la corbeille
+                                        </button>
+                                    ) : (
+                                        <span className="file-count">
+                                            {visibleList.length} document
+                                            {visibleList.length > 1 ? "s" : ""}
+                                        </span>
+                                    )}
+                                </div>
 
-                                        <h2>
-                                            {getDocumentTitle(selectedTrash)}
-                                        </h2>
+                                <div className="file-head" aria-hidden="true">
+                                    <span />
+                                    <span>Nom</span>
+                                    <span>Modifié</span>
+                                    <span>Accès</span>
+                                    <span />
+                                </div>
 
+                                {loading ? (
+                                    <div className="file-list">
+                                        {[0, 1, 2, 3].map((item) => (
+                                            <div
+                                                key={item}
+                                                className="skeleton-row"
+                                            />
+                                        ))}
+                                    </div>
+                                ) : visibleList.length === 0 ? (
+                                    <div className="file-empty">
+                                        <FileText size={38} />
                                         <p>
-                                            Ce document est dans la corbeille.
-                                            Restaurez-le pour le modifier à
-                                            nouveau, ou supprimez-le
-                                            définitivement.
+                                            {searching
+                                                ? "Aucun document ne correspond à votre recherche."
+                                                : emptyMessages[view]}
                                         </p>
-
-                                        <div className="trash-actions">
-                                            <button
-                                                className="restore-button"
-                                                onClick={() =>
-                                                    restoreDocument(
-                                                        selectedTrash
-                                                    )
-                                                }
-                                            >
-                                                <RotateCcw size={16} />
-                                                Restaurer
-                                            </button>
-
-                                            <button
-                                                className="danger-button"
-                                                onClick={() =>
-                                                    deleteForever(selectedTrash)
-                                                }
-                                            >
-                                                <Trash2 size={16} />
-                                                Supprimer définitivement
-                                            </button>
-                                        </div>
                                     </div>
                                 ) : (
-                                    <div className="editor-empty">
-                                        <div className="editor-empty-icon">
-                                            <Trash2 size={36} />
-                                        </div>
-
-                                        <h2>Corbeille</h2>
-
-                                        <p>
-                                            Sélectionnez un document supprimé
-                                            pour le restaurer ou l'effacer
-                                            définitivement.
-                                        </p>
+                                    <div className="file-list">
+                                        {visibleList.map(renderRow)}
                                     </div>
-                                )
-                            ) : selectedDocument ? (
-                                <>
-                                    <div className="editor-card-header">
-                                        <div className="editor-card-meta">
-                                            <span
-                                                className={
-                                                    selectedDocument.permission ===
-                                                    "owner"
-                                                        ? "permission-badge owner"
-                                                        : selectedDocument.permission ===
-                                                          "editor"
-                                                        ? "permission-badge editor"
-                                                        : "permission-badge viewer"
-                                                }
-                                            >
-                                                {getPermissionLabel(
-                                                    selectedDocument.permission
-                                                )}
-                                            </span>
-
-                                            <span className="editor-card-date">
-                                                Modifié{" "}
-                                                {formatRelativeDate(
-                                                    selectedDocument.updated_at ||
-                                                        selectedDocument.created_at
-                                                ).toLowerCase()}
-                                            </span>
-                                        </div>
-
-                                        {selectedDocument.permission ===
-                                            "owner" && (
-                                            <button
-                                                className="share-button"
-                                                onClick={() =>
-                                                    setShowShare(true)
-                                                }
-                                            >
-                                                <Share2 size={16} />
-                                                Partager
-                                            </button>
-                                        )}
-                                    </div>
-
-                                    <div className="editor-wrapper">
-                                        <TextEditor
-                                            key={selectedDocument.id}
-                                            document={selectedDocument}
-                                            documentId={selectedDocument.id}
-                                            documentTitle={getDocumentTitle(
-                                                selectedDocument
-                                            )}
-                                            token={token}
-                                            readOnly={
-                                                selectedDocument.permission ===
-                                                "viewer"
-                                            }
-                                            onSaved={() => loadDocuments(true)}
-                                        />
-                                    </div>
-                                </>
-                            ) : (
-                                <div className="editor-empty">
-                                    <div className="editor-empty-icon">
-                                        <FileText size={36} />
-                                    </div>
-
-                                    <h2>Sélectionnez un document</h2>
-
-                                    <p>
-                                        Choisissez un document dans la liste
-                                        pour commencer à le modifier.
-                                    </p>
-                                </div>
-                            )}
-                        </section>
-                    </div>
-                )}
-            </main>
+                                )}
+                            </section>
+                        </div>
+                    </main>
+                </div>
+            )}
 
             {/* ================= MENU CONTEXTUEL ================= */}
 
@@ -1191,16 +1112,61 @@ function Workspace() {
                         style={{ top: menu.y, left: menu.x }}
                         role="menu"
                     >
-                        {view === "trash" ? (
+                        <button
+                            onClick={() => {
+                                setMenu(null);
+                                setOpenId(menuItem.id);
+                            }}
+                        >
+                            <FolderOpen size={16} />
+                            Ouvrir
+                        </button>
+
+                        {(menuItem.permission === "owner" ||
+                            menuItem.permission === "editor") && (
+                            <button
+                                onClick={() => {
+                                    setMenu(null);
+                                    setRenameTarget({
+                                        id: menuItem.id,
+                                        title: getDocumentTitle(menuItem)
+                                    });
+                                }}
+                            >
+                                <Pencil size={16} />
+                                Renommer
+                            </button>
+                        )}
+
+                        <button
+                            onClick={() => {
+                                setMenu(null);
+                                toggleFavorite(menuItem);
+                            }}
+                        >
+                            <Star
+                                size={16}
+                                className={
+                                    menuItem.is_favorite
+                                        ? "fav-star"
+                                        : undefined
+                                }
+                            />
+                            {menuItem.is_favorite
+                                ? "Retirer des favoris"
+                                : "Ajouter aux favoris"}
+                        </button>
+
+                        {menuItem.permission === "owner" && (
                             <>
                                 <button
                                     onClick={() => {
                                         setMenu(null);
-                                        restoreDocument(menuItem);
+                                        setShareId(menuItem.id);
                                     }}
                                 >
-                                    <RotateCcw size={16} />
-                                    Restaurer
+                                    <Share2 size={16} />
+                                    Partager
                                 </button>
 
                                 <hr />
@@ -1209,79 +1175,12 @@ function Workspace() {
                                     className="danger"
                                     onClick={() => {
                                         setMenu(null);
-                                        deleteForever(menuItem);
+                                        moveToTrash(menuItem);
                                     }}
                                 >
                                     <Trash2 size={16} />
-                                    Supprimer définitivement
+                                    Mettre à la corbeille
                                 </button>
-                            </>
-                        ) : (
-                            <>
-                                {(menuItem.permission === "owner" ||
-                                    menuItem.permission === "editor") && (
-                                    <button
-                                        onClick={() => {
-                                            setMenu(null);
-                                            setRenameTarget({
-                                                id: menuItem.id,
-                                                title: getDocumentTitle(
-                                                    menuItem
-                                                )
-                                            });
-                                        }}
-                                    >
-                                        <Pencil size={16} />
-                                        Renommer
-                                    </button>
-                                )}
-
-                                <button
-                                    onClick={() => {
-                                        setMenu(null);
-                                        toggleFavorite(menuItem);
-                                    }}
-                                >
-                                    <Star
-                                        size={16}
-                                        className={
-                                            menuItem.is_favorite
-                                                ? "fav-star"
-                                                : undefined
-                                        }
-                                    />
-                                    {menuItem.is_favorite
-                                        ? "Retirer des favoris"
-                                        : "Ajouter aux favoris"}
-                                </button>
-
-                                {menuItem.permission === "owner" && (
-                                    <>
-                                        <button
-                                            onClick={() => {
-                                                setMenu(null);
-                                                setSelectedId(menuItem.id);
-                                                setShowShare(true);
-                                            }}
-                                        >
-                                            <Share2 size={16} />
-                                            Partager
-                                        </button>
-
-                                        <hr />
-
-                                        <button
-                                            className="danger"
-                                            onClick={() => {
-                                                setMenu(null);
-                                                moveToTrash(menuItem);
-                                            }}
-                                        >
-                                            <Trash2 size={16} />
-                                            Mettre à la corbeille
-                                        </button>
-                                    </>
-                                )}
                             </>
                         )}
                     </div>
@@ -1339,12 +1238,12 @@ function Workspace() {
 
             {/* ================= MODAL PARTAGE ================= */}
 
-            {showShare && selectedDocument && (
+            {shareDoc && (
                 <ShareModal
-                    documentId={selectedDocument.id}
-                    documentTitle={getDocumentTitle(selectedDocument)}
+                    documentId={shareDoc.id}
+                    documentTitle={getDocumentTitle(shareDoc)}
                     token={token}
-                    onClose={() => setShowShare(false)}
+                    onClose={() => setShareId(null)}
                     notify={notify}
                 />
             )}
@@ -1553,7 +1452,7 @@ function Workspace() {
                     {toast.text}
                 </div>
             )}
-        </div>
+        </>
     );
 }
 
