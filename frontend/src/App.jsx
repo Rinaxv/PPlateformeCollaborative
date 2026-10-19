@@ -37,10 +37,12 @@ import Register from "./Register";
 import ProtectedRoute from "./ProtectedRoute";
 import TextEditor from "./TextEditor";
 import ShareModal from "./ShareModal";
+import NotificationBell from "./NotificationBell";
 
 import "./App.css";
 import "./organize.css";
 import "./extras.css";
+import "./collab.css";
 
 const API_URL = "http://localhost:5000/api";
 
@@ -280,7 +282,7 @@ function Workspace() {
         headers: { Authorization: `Bearer ${token}` }
     };
 
-    /* ---------------- NOTIFICATIONS ---------------- */
+    /* ---------------- NOTIFICATIONS (toasts) ---------------- */
 
     const notify = (text, type = "success") => {
         setToast({ text, type, id: Date.now() });
@@ -948,6 +950,14 @@ function Workspace() {
                                     <Palette size={19} />
                                 </button>
 
+                                <NotificationBell
+                                    token={token}
+                                    onOpenDocument={async (id) => {
+                                        await loadDocuments(true);
+                                        setOpenId(id);
+                                    }}
+                                />
+
                                 <button
                                     className="top-logout"
                                     onClick={handleLogout}
@@ -1434,7 +1444,7 @@ function Workspace() {
                 </div>
             )}
 
-            {/* ================= NOTIFICATION ================= */}
+            {/* ================= NOTIFICATION (toast) ================= */}
 
             {toast && (
                 <div

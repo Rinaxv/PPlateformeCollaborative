@@ -71,16 +71,29 @@ import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 import VersionHistory from "./VersionHistory";
 import { Ribbon, PAGE_SIZES, MARGINS, DEFAULT_PAGE } from "./Ribbon";
+import { CollabRibbon } from "./CollabRibbon";
+import { NavPane, SuggestionsPanel, MentionPicker } from "./Panels";
+import NotificationBell from "./NotificationBell";
 import {
   PageBreak,
   LineSpacing,
   SearchReplace,
   searchKey,
 } from "./customExtensions";
+import {
+  SuggestInsert,
+  SuggestDelete,
+  Suggestions,
+  MentionNode,
+  collectSuggestions,
+  collectHeadings,
+} from "./collabExtensions";
+import { TableOfContents } from "./TocNode";
 import { useTheme } from "./theme";
 
 import "./TextEditor.css";
 import "./extras.css";
+import "./collab.css";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -124,6 +137,11 @@ ul[data-type="taskList"] li{display:flex;gap:.5em}
 ul[data-type="taskList"] li>div{flex:1}
 div[data-type="page-break"]{break-after:page;height:0;margin:0;border:0}
 hr{border:none;border-top:1px solid #ccc;margin:1em 0}
+.mention{color:#3730a3;font-weight:600}
+.sg-ins{color:#047857;text-decoration:underline}
+.toc{margin:0 0 1em;padding:10px 14px;border:1px solid #cbd5e1;border-radius:6px}
+.toc h2{margin:0 0 .4em;font-size:1.15em}
+.toc div{padding:1px 0}
 `;
 
 const TABS = [
@@ -153,11 +171,12 @@ function getUserFromToken(token) {
     const id = Number(payload.id) || 0;
 
     return {
+      id,
       name: payload.name || "Utilisateur",
       color: CURSOR_COLORS[id % CURSOR_COLORS.length],
     };
   } catch {
-    return { name: "Utilisateur", color: CURSOR_COLORS[0] };
+    return { id: 0, name: "Utilisateur", color: CURSOR_COLORS[0] };
   }
 }
 
@@ -182,7 +201,11 @@ function jsonHasContent(node) {
     return Boolean(node.text && node.text.trim());
   }
 
-  if (node.type === "pageBreak" || node.type === "image") {
+  if (
+    node.type === "pageBreak" ||
+    node.type === "image" ||
+    node.type === "tableOfContents"
+  ) {
     return true;
   }
 
@@ -224,10 +247,75 @@ function normalizePage(page) {
 
   return {
     size: PAGE_SIZES[safe.size] ? safe.size : DEFAULT_PAGE.size,
-    orientation:
-      safe.orientation === "landscape" ? "landscape" : "portrait",
+    orientation: safe.orientation === "landscape" ? "landscape" : "portrait",
     margin: MARGINS[safe.margin] ? safe.margin : DEFAULT_PAGE.margin,
+    header: typeof safe.header === "string" ? safe.header.slice(0, 120) : "",
+    footer: typeof safe.footer === "string" ? safe.footer.slice(0, 120) : "",
+    pageNumbers: safe.pageNumbers === true,
+    numberAlign: ["left", "center", "right"].includes(safe.numberAlign)
+      ? safe.numberAlign
+      : "right",
   };
+}
+
+// Contenu du pied de page (gauche / centre / droite) pour une page donnée
+function footerSlots(setup, pageNumber, total) {
+  const number = `Page ${pageNumber} sur ${total}`;
+  const text = setup.footer || "";
+  const slots = { left: "", center: "", right: "" };
+
+  if (setup.pageNumbers) {
+    if (setup.numberAlign === "center") {
+      slots.center = text ? `${text} · ${number}` : number;
+    } else {
+      slots[setup.numberAlign === "left" ? "left" : "right"] = number;
+      slots.center = text;
+    }
+  } else {
+    slots.center = text;
+  }
+
+  return slots;
+}
+
+// Règles CSS @page (en-tête et pied de page à l'impression)
+function printMarginRules(setup) {
+  const quote = (value) =>
+    `"${String(value)
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\s+/g, " ")}"`;
+
+  const NUMBER = `"Page " counter(page) " sur " counter(pages)`;
+  const text = setup.footer ? quote(setup.footer) : null;
+  const parts = { left: [], center: [], right: [] };
+
+  if (setup.pageNumbers) {
+    if (setup.numberAlign === "center") {
+      parts.center = [...(text ? [text, quote(" · ")] : []), NUMBER];
+    } else {
+      parts[setup.numberAlign === "left" ? "left" : "right"] = [NUMBER];
+      if (text) parts.center = [text];
+    }
+  } else if (text) {
+    parts.center = [text];
+  }
+
+  let css = "";
+
+  if (setup.header) {
+    css += `@top-center{content:${quote(setup.header)};font-size:9pt;color:#666}`;
+  }
+
+  ["left", "center", "right"].forEach((slot) => {
+    if (parts[slot].length) {
+      css += `@bottom-${slot}{content:${parts[slot].join(
+        " "
+      )};font-size:9pt;color:#666}`;
+    }
+  });
+
+  return css;
 }
 
 function arrayBufferToBase64(buffer) {
@@ -259,7 +347,6 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;");
 }
 
-// Réduit l'image pour ne pas alourdir la base de données ni la synchronisation
 function compressImage(file, maxSide = 900, quality = 0.78) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -407,6 +494,8 @@ export default function TextEditor({
 
   const { preferences, resolvedMode, update: updateTheme } = useTheme();
 
+  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+
   /* ---------------- ETATS ---------------- */
 
   const [title, setTitle] = useState(initialTitle);
@@ -425,7 +514,7 @@ export default function TextEditor({
   const [showHistory, setShowHistory] = useState(false);
   const [showStats, setShowStats] = useState(false);
 
-  const [pageSetup, setPageSetup] = useState(DEFAULT_PAGE);
+  const [pageSetup, setPageSetup] = useState(() => normalizePage(DEFAULT_PAGE));
   const [zoom, setZoom] = useState(100);
   const [showRuler, setShowRuler] = useState(true);
   const [readingMode, setReadingMode] = useState(false);
@@ -439,6 +528,13 @@ export default function TextEditor({
 
   const [contentHeight, setContentHeight] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
+
+  const [suggestMode, setSuggestMode] = useState(false);
+  const [sidebar, setSidebar] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
+  const [people, setPeople] = useState([]);
+  const [mention, setMention] = useState(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
 
   /* ---------------- REFS ---------------- */
 
@@ -470,6 +566,8 @@ export default function TextEditor({
   const [yDoc] = useState(() => new Y.Doc());
   const [awareness] = useState(() => new Awareness(yDoc));
   const currentUser = useMemo(() => getUserFromToken(token || ""), [token]);
+  const userRef = useRef({ id: currentUser.id, name: currentUser.name });
+  userRef.current = { id: currentUser.id, name: currentUser.name };
 
   useEffect(() => {
     aliveRef.current = true;
@@ -514,6 +612,11 @@ export default function TextEditor({
       PageBreak,
       LineSpacing,
       SearchReplace,
+      SuggestInsert,
+      SuggestDelete,
+      Suggestions.configure({ getUser: () => userRef.current }),
+      MentionNode,
+      TableOfContents,
       Collaboration.configure({ document: yDoc }),
       CollaborationCaret.configure({
         provider: { awareness },
@@ -551,6 +654,12 @@ export default function TextEditor({
       },
     });
   }, [editor, spell]);
+
+  useEffect(() => {
+    if (editor) {
+      editor.storage.suggestions.enabled = suggestMode && !readOnly;
+    }
+  }, [editor, suggestMode, readOnly]);
 
   useEffect(() => {
     setTitle(
@@ -613,6 +722,18 @@ export default function TextEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor?.state.doc]);
 
+  const suggestions = useMemo(
+    () => (editor ? collectSuggestions(editor.state.doc) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editor?.state.doc]
+  );
+
+  const headings = useMemo(
+    () => (editor ? collectHeadings(editor.state.doc) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editor?.state.doc]
+  );
+
   const inTable = Boolean(editor?.isActive("table"));
 
   useEffect(() => {
@@ -620,6 +741,19 @@ export default function TextEditor({
       setActiveTab("home");
     }
   }, [activeTab, inTable]);
+
+  // Paramètres de page transmis à la table des matières (numéros de page)
+  useEffect(() => {
+    if (!editor) return;
+
+    const storage = editor.storage.tableOfContents;
+
+    if (storage) {
+      storage.pageH = pageH;
+      storage.margin = marginPx;
+      storage.zoom = zoomFactor;
+    }
+  }, [editor, pageH, marginPx, zoomFactor]);
 
   /* ---------------- MESURE DES PAGES ---------------- */
 
@@ -673,6 +807,223 @@ export default function TextEditor({
     setFindOpen(true);
     setReplaceMode(Boolean(withReplace));
   }, []);
+
+  /* ---------------- MENTIONS ---------------- */
+
+  useEffect(() => {
+    if (!documentId || !token) return;
+
+    axios
+      .get(`${API_URL}/documents/${documentId}/people`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      .then((response) =>
+        setPeople(Array.isArray(response.data) ? response.data : [])
+      )
+      .catch(() => {});
+  }, [documentId, token, collaborators]);
+
+  useEffect(() => {
+    if (!editor) return undefined;
+
+    const detect = () => {
+      const { selection } = editor.state;
+
+      if (readOnly || !selection.empty) {
+        setMention(null);
+        return;
+      }
+
+      const $from = selection.$from;
+
+      const before = $from.parent.textBetween(
+        Math.max(0, $from.parentOffset - 30),
+        $from.parentOffset,
+        undefined,
+        "\ufffc"
+      );
+
+      const match = /(?:^|\s)@([^\s@]{0,24})$/.exec(before);
+
+      if (!match) {
+        setMention(null);
+        return;
+      }
+
+      const query = match[1];
+      const to = selection.from;
+      const from = to - query.length - 1;
+
+      try {
+        const coords = editor.view.coordsAtPos(to);
+
+        setMention((previous) => {
+          if (!previous || previous.query !== query) {
+            setMentionIndex(0);
+          }
+
+          return { from, to, query, x: coords.left, y: coords.bottom };
+        });
+      } catch {
+        setMention(null);
+      }
+    };
+
+    editor.on("update", detect);
+    editor.on("selectionUpdate", detect);
+
+    return () => {
+      editor.off("update", detect);
+      editor.off("selectionUpdate", detect);
+    };
+  }, [editor, readOnly]);
+
+  const mentionList = useMemo(() => {
+    if (!mention) return [];
+
+    const query = mention.query.toLowerCase();
+
+    return people
+      .filter(
+        (person) =>
+          person.id !== currentUser.id &&
+          (person.name.toLowerCase().includes(query) ||
+            person.email.toLowerCase().includes(query))
+      )
+      .slice(0, 6);
+  }, [mention, people, currentUser.id]);
+
+  const pickMention = (person) => {
+    if (!editor || !mention || !person) return;
+
+    editor
+      .chain()
+      .focus()
+      .insertContentAt({ from: mention.from, to: mention.to }, [
+        {
+          type: "mention",
+          attrs: { id: String(person.id), label: person.name },
+        },
+        { type: "text", text: " " },
+      ])
+      .run();
+
+    setMention(null);
+
+    axios
+      .post(
+        `${API_URL}/documents/${documentId}/mentions`,
+        { userIds: [person.id] },
+        { headers: authHeaders }
+      )
+      .then((response) => {
+        if (response.data?.noAccess?.length) {
+          setErrorMessage(
+            `${person.name} n'a pas accès à ce document : partagez-le pour qu'il soit notifié.`
+          );
+        }
+      })
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    if (!editor || !mention || mentionList.length === 0) return undefined;
+
+    const dom = editor.view.dom;
+
+    const onKey = (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+        setMentionIndex(
+          (index) =>
+            (index + (event.key === "ArrowDown" ? 1 : -1) + mentionList.length) %
+            mentionList.length
+        );
+      } else if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        pickMention(mentionList[mentionIndex] || mentionList[0]);
+      } else if (event.key === "Escape") {
+        event.stopImmediatePropagation();
+        setMention(null);
+      }
+    };
+
+    dom.addEventListener("keydown", onKey, true);
+
+    return () => dom.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, mention, mentionList, mentionIndex]);
+
+  const insertMentionTrigger = () => {
+    if (!editor || readOnly) return;
+
+    const { $from } = editor.state.selection;
+
+    const previous =
+      $from.parentOffset > 0
+        ? $from.parent.textBetween($from.parentOffset - 1, $from.parentOffset)
+        : " ";
+
+    editor
+      .chain()
+      .focus()
+      .insertContent($from.parentOffset === 0 || /\s/.test(previous) ? "@" : " @")
+      .run();
+  };
+
+  /* ---------------- SUGGESTIONS ---------------- */
+
+  const resolveOne = (item, accept) => {
+    if (!editor || readOnly) return;
+
+    editor.chain().resolveSuggestions([item], accept).run();
+  };
+
+  const resolveAll = (accept) => {
+    if (!editor || readOnly || suggestions.length === 0) return;
+
+    if (
+      !window.confirm(
+        accept
+          ? "Accepter toutes les modifications ?"
+          : "Refuser toutes les modifications ?"
+      )
+    ) {
+      return;
+    }
+
+    editor.chain().resolveSuggestions(suggestions, accept).run();
+  };
+
+  const focusSuggestion = (item) => {
+    if (!editor) return;
+
+    editor
+      .chain()
+      .focus()
+      .setTextSelection({ from: item.from, to: item.to })
+      .scrollIntoView()
+      .run();
+  };
+
+  const jumpToHeading = (heading) => {
+    if (!editor) return;
+
+    editor.chain().focus().setTextSelection(heading.pos + 1).run();
+
+    editor.view
+      .nodeDOM(heading.pos)
+      ?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  };
+
+  const insertToc = () => {
+    if (!editor || readOnly) return;
+
+    editor.chain().focus().insertContent({ type: "tableOfContents" }).run();
+  };
 
   /* ---------------- DOCUMENT VIDE ? ---------------- */
 
@@ -775,11 +1126,9 @@ export default function TextEditor({
         if (documentPropRef.current?.content) {
           documentContent = documentPropRef.current.content;
         } else {
-          const headers = token ? { Authorization: `Bearer ${token}` } : {};
-
           const response = await axios.get(
             `${API_URL}/documents/${documentId}`,
-            { headers }
+            { headers: token ? { Authorization: `Bearer ${token}` } : {} }
           );
 
           if (cancelled) return;
@@ -919,6 +1268,10 @@ export default function TextEditor({
       );
     }
 
+    function handleNotification() {
+      window.dispatchEvent(new Event("collab:notify"));
+    }
+
     function handleConnect() {
       setStatus("Connecté");
       setErrorMessage("");
@@ -1041,6 +1394,7 @@ export default function TextEditor({
     socket.on("yjs-error", handleYjsError);
     socket.on("awareness-update", handleRemoteAwareness);
     socket.on("awareness-remove", handleAwarenessRemove);
+    socket.on("notification", handleNotification);
 
     yDoc.on("update", handleLocalUpdate);
     awareness.on("update", handleAwarenessUpdate);
@@ -1062,6 +1416,7 @@ export default function TextEditor({
       socket.off("yjs-error", handleYjsError);
       socket.off("awareness-update", handleRemoteAwareness);
       socket.off("awareness-remove", handleAwarenessRemove);
+      socket.off("notification", handleNotification);
 
       socket.disconnect();
 
@@ -1112,11 +1467,7 @@ export default function TextEditor({
 
       const tiptapContent = editor.getJSON();
 
-      const headers = { "Content-Type": "application/json" };
-
-      if (token) {
-        headers.Authorization = `Bearer ${token}`;
-      }
+      const headers = { "Content-Type": "application/json", ...authHeaders };
 
       const contentToSave = {
         type: "doc",
@@ -1185,8 +1536,6 @@ export default function TextEditor({
       throw new Error("Version invalide.");
     }
 
-    const headers = token ? { Authorization: `Bearer ${token}` } : {};
-
     try {
       await axios.post(
         `${API_URL}/documents/${documentId}/versions`,
@@ -1199,7 +1548,7 @@ export default function TextEditor({
           },
           label: "Avant restauration",
         },
-        { headers }
+        { headers: authHeaders }
       );
     } catch (error) {
       console.warn("Sauvegarde avant restauration impossible :", error.message);
@@ -1372,7 +1721,7 @@ export default function TextEditor({
   };
 
   /* =========================================================
-     EXPORT PDF
+     EXPORT PDF (avec en-tête, pied de page, numéros)
   ========================================================= */
 
   const handleDownloadPDF = useCallback(() => {
@@ -1432,15 +1781,47 @@ export default function TextEditor({
     html2pdf()
       .set(options)
       .from(exportContainer)
+      .toPdf()
+      .get("pdf")
+      .then((pdf) => {
+        const total = pdf.internal.getNumberOfPages();
+        const width = pdf.internal.pageSize.getWidth();
+        const height = pdf.internal.pageSize.getHeight();
+
+        for (let page = 1; page <= total; page += 1) {
+          pdf.setPage(page);
+          pdf.setFontSize(9);
+          pdf.setTextColor(110, 110, 110);
+
+          if (pageSetup.header) {
+            pdf.text(pageSetup.header, width / 2, marginMm / 2 + 1, {
+              align: "center",
+            });
+          }
+
+          const slots = footerSlots(pageSetup, page, total);
+          const y = height - marginMm / 2 + 2;
+
+          if (slots.left) pdf.text(slots.left, marginMm, y);
+
+          if (slots.center) {
+            pdf.text(slots.center, width / 2, y, { align: "center" });
+          }
+
+          if (slots.right) {
+            pdf.text(slots.right, width - marginMm, y, { align: "right" });
+          }
+        }
+      })
       .save()
       .catch((error) => {
         console.error("Erreur export PDF :", error);
         setErrorMessage("Impossible de générer le PDF.");
       });
-  }, [editor, title, pageW, marginPx, pageDef, pageSetup.orientation]);
+  }, [editor, title, pageW, marginPx, pageDef, pageSetup]);
 
   /* =========================================================
-     IMPRESSION
+     IMPRESSION (suggestions de suppression retirées)
   ========================================================= */
 
   const handlePrint = () => {
@@ -1448,11 +1829,39 @@ export default function TextEditor({
 
     const marginMm = (marginPx * PX_TO_MM).toFixed(1);
 
+    const temp = document.createElement("div");
+    temp.innerHTML = editor.getHTML();
+
+    temp
+      .querySelectorAll('[data-suggest="suggestDelete"]')
+      .forEach((element) => element.remove());
+
+    const list = collectHeadings(editor.state.doc);
+
+    temp.querySelectorAll('div[data-type="toc"]').forEach((element) => {
+      element.className = "toc";
+
+      element.innerHTML =
+        "<h2>Table des matières</h2>" +
+        (list.length
+          ? list
+              .map(
+                (heading) =>
+                  `<div style="margin-left:${(heading.level - 1) * 18}px">${escapeHtml(
+                    heading.text
+                  )}</div>`
+              )
+              .join("")
+          : "<div>(aucun titre)</div>");
+    });
+
     const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>${escapeHtml(
       title
     )}</title><style>@page{size:${pageDef.css} ${
       pageSetup.orientation
-    };margin:${marginMm}mm}${PRINT_CSS}</style></head><body>${editor.getHTML()}</body></html>`;
+    };margin:${marginMm}mm;${printMarginRules(
+      pageSetup
+    )}}${PRINT_CSS}</style></head><body>${temp.innerHTML}</body></html>`;
 
     const iframe = document.createElement("iframe");
 
@@ -1504,7 +1913,10 @@ export default function TextEditor({
       const key = event.key.toLowerCase();
       const mod = event.ctrlKey || event.metaKey;
 
-      if (mod && key === "s") {
+      if (mod && event.shiftKey && key === "e") {
+        event.preventDefault();
+        setSuggestMode((value) => !value);
+      } else if (mod && key === "s") {
         event.preventDefault();
         saveRef.current();
       } else if (mod && key === "f") {
@@ -1583,6 +1995,9 @@ export default function TextEditor({
 
   const cmPx = 37.795 * zoomFactor;
   const marginZoomed = marginPx * zoomFactor;
+  const hasHeaderFooter = Boolean(
+    pageSetup.header || pageSetup.footer || pageSetup.pageNumbers
+  );
 
   /* =========================================================
      INTERFACE
@@ -1686,9 +2101,9 @@ export default function TextEditor({
             </span>
           )}
 
-          <span className="tb-count">
-            {collaborators} en ligne
-          </span>
+          <span className="tb-count">{collaborators} en ligne</span>
+
+          <NotificationBell token={token} variant="dark" />
 
           {onShare && (
             <button type="button" className="tb-share" onClick={onShare}>
@@ -1773,6 +2188,23 @@ export default function TextEditor({
               }
               onFullscreen={toggleFullscreen}
               defaultPt={defaultPt}
+            />
+
+            <CollabRibbon
+              tab={activeTab}
+              suggestMode={suggestMode}
+              onToggleMode={() => setSuggestMode((value) => !value)}
+              count={suggestions.length}
+              onAcceptAll={() => resolveAll(true)}
+              onRejectAll={() => resolveAll(false)}
+              sidebarOpen={sidebar}
+              onToggleSidebar={() => setSidebar((value) => !value)}
+              navOpen={navOpen}
+              onToggleNav={() => setNavOpen((value) => !value)}
+              onInsertToc={insertToc}
+              onMention={insertMentionTrigger}
+              pageSetup={pageSetup}
+              setPageSetup={setPageSetup}
             />
           </div>
         </>
@@ -1913,52 +2345,125 @@ export default function TextEditor({
         </div>
       )}
 
-      {/* ------------------- DOCUMENT ------------------- */}
+      {/* ------------------- CORPS : PLAN + DOCUMENT + MODIFICATIONS ------------------- */}
 
-      <div
-        className="doc-area"
-        ref={docAreaRef}
-        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-      >
-        {showRuler && !readingMode && (
-          <div className="ruler-wrap">
-            <div
-              className="ruler"
-              style={{
-                width: pageW * zoomFactor,
-                backgroundImage: `linear-gradient(to right, var(--ruler-margin) ${marginZoomed}px, transparent ${marginZoomed}px, transparent calc(100% - ${marginZoomed}px), var(--ruler-margin) calc(100% - ${marginZoomed}px)), linear-gradient(to right, var(--text-muted) 1px, transparent 1px)`,
-                backgroundSize: `100% 100%, ${cmPx}px 7px`,
-                backgroundRepeat: "no-repeat, repeat-x",
-                backgroundPosition: "0 0, 0 100%",
-              }}
-            />
-          </div>
+      <div className="editor-body">
+        {navOpen && !readingMode && (
+          <NavPane
+            headings={headings}
+            onJump={jumpToHeading}
+            onClose={() => setNavOpen(false)}
+          />
         )}
 
         <div
-          className="page-outer"
-          style={{
-            width: pageW * zoomFactor,
-            height: pages * pageH * zoomFactor,
-          }}
+          className="doc-area"
+          ref={docAreaRef}
+          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         >
+          {showRuler && !readingMode && (
+            <div className="ruler-wrap">
+              <div
+                className="ruler"
+                style={{
+                  width: pageW * zoomFactor,
+                  backgroundImage: `linear-gradient(to right, var(--ruler-margin) ${marginZoomed}px, transparent ${marginZoomed}px, transparent calc(100% - ${marginZoomed}px), var(--ruler-margin) calc(100% - ${marginZoomed}px)), linear-gradient(to right, var(--text-muted) 1px, transparent 1px)`,
+                  backgroundSize: `100% 100%, ${cmPx}px 7px`,
+                  backgroundRepeat: "no-repeat, repeat-x",
+                  backgroundPosition: "0 0, 0 100%",
+                }}
+              />
+            </div>
+          )}
+
           <div
-            ref={pageRef}
-            className="tiptap-document-page"
+            className="page-outer"
             style={{
-              width: pageW,
-              minHeight: pages * pageH,
-              padding: marginPx,
-              transform: `scale(${zoomFactor})`,
-              backgroundImage: `repeating-linear-gradient(to bottom, transparent 0, transparent ${
-                pageH - 2
-              }px, #cfd6e2 ${pageH - 2}px, #cfd6e2 ${pageH}px)`,
+              width: pageW * zoomFactor,
+              height: pages * pageH * zoomFactor,
             }}
           >
-            <EditorContent editor={editor} />
+            <div
+              ref={pageRef}
+              className="tiptap-document-page"
+              style={{
+                position: "relative",
+                width: pageW,
+                minHeight: pages * pageH,
+                padding: marginPx,
+                transform: `scale(${zoomFactor})`,
+                backgroundImage: `repeating-linear-gradient(to bottom, transparent 0, transparent ${
+                  pageH - 2
+                }px, #cfd6e2 ${pageH - 2}px, #cfd6e2 ${pageH}px)`,
+              }}
+            >
+              {hasHeaderFooter &&
+                Array.from({ length: pages }).map((_, index) => {
+                  const slots = footerSlots(pageSetup, index + 1, pages);
+                  const hasFooter = slots.left || slots.center || slots.right;
+
+                  return (
+                    <React.Fragment key={index}>
+                      {pageSetup.header && (
+                        <div
+                          className="page-hf"
+                          style={{
+                            top: index * pageH + marginPx / 2 - 9,
+                            left: marginPx,
+                            right: marginPx,
+                          }}
+                        >
+                          {pageSetup.header}
+                        </div>
+                      )}
+
+                      {hasFooter && (
+                        <div
+                          className="page-hf footer"
+                          style={{
+                            top: (index + 1) * pageH - marginPx / 2 - 9,
+                            left: marginPx,
+                            right: marginPx,
+                          }}
+                        >
+                          <span>{slots.left}</span>
+                          <span>{slots.center}</span>
+                          <span>{slots.right}</span>
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+
+              <EditorContent editor={editor} />
+            </div>
           </div>
         </div>
+
+        {sidebar && !readingMode && (
+          <SuggestionsPanel
+            suggestions={suggestions}
+            canEdit={!readOnly}
+            suggestMode={suggestMode}
+            onFocus={focusSuggestion}
+            onAccept={(item) => resolveOne(item, true)}
+            onReject={(item) => resolveOne(item, false)}
+            onAcceptAll={() => resolveAll(true)}
+            onRejectAll={() => resolveAll(false)}
+            onClose={() => setSidebar(false)}
+          />
+        )}
       </div>
+
+      {mention && !readOnly && (
+        <MentionPicker
+          state={mention}
+          list={mentionList}
+          index={mentionIndex}
+          onPick={pickMention}
+          hasPeople={people.some((person) => person.id !== currentUser.id)}
+        />
+      )}
 
       {/* ------------------- BARRE D'ETAT ------------------- */}
 
@@ -1971,6 +2476,10 @@ export default function TextEditor({
           <span>{stats.words} mot{stats.words > 1 ? "s" : ""}</span>
 
           <span>Français (France)</span>
+
+          {suggestMode && !readOnly && (
+            <span className="sb-badge">Suggestions</span>
+          )}
 
           {readOnly && <span className="sb-badge">Lecture seule</span>}
         </div>
@@ -2139,6 +2648,9 @@ export default function TextEditor({
                 {pageDef.label} ({pageDef.dim}),{" "}
                 {landscape ? "paysage" : "portrait"}
               </dd>
+
+              <dt>Modifications en attente</dt>
+              <dd>{suggestions.length}</dd>
 
               <dt>Collaborateurs en ligne</dt>
               <dd>{collaborators}</dd>

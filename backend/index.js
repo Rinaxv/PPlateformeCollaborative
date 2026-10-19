@@ -12,6 +12,7 @@ const authMiddleware = require("./middleware/auth");
 const organize = require("./routes/organize");
 const versions = require("./routes/versions");
 const registerRealtimeExtras = require("./realtime");
+const createCollab = require("./routes/collab");
 
 const app = express();
 const server = http.createServer(app);
@@ -41,6 +42,12 @@ const io = new Server(server, {
         allowedHeaders: ["Authorization"]
     }
 });
+
+// Notifications, mentions, partage avec notification.
+// Doit rester AVANT les routes /api/documents ci-dessous : sa route de partage
+// remplace l'ancienne.
+const collab = createCollab(io);
+app.use("/api", collab.router);
 
 /* =========================================================
    JWT
@@ -512,6 +519,11 @@ app.delete("/api/documents/:id", authMiddleware, async (req, res) => {
             [req.params.id]
         );
 
+        await pool.query(
+            "DELETE FROM notifications WHERE document_id = $1",
+            [req.params.id]
+        );
+
         const result = await pool.query(
             "DELETE FROM documents WHERE id = $1 RETURNING id",
             [req.params.id]
@@ -541,6 +553,8 @@ app.delete("/api/documents/:id", authMiddleware, async (req, res) => {
 
 /* =========================================================
    SHARE DOCUMENT
+   (POST /api/documents/:id/share est géré par routes/collab.js,
+    avec notification. Cette ancienne version n'est plus utilisée.)
 ========================================================= */
 
 app.post("/api/documents/:id/share", authMiddleware, async (req, res) => {
@@ -1177,7 +1191,7 @@ io.on("connection", (socket) => {
 });
 
 /* =========================================================
-   PRESENCE / CURSEURS (awareness)
+   PRESENCE / CURSEURS (awareness) + salle personnelle
 ========================================================= */
 
 registerRealtimeExtras(io, getDocumentPermission);
@@ -1190,6 +1204,7 @@ async function startServer() {
     await prepareDatabase();
     await organize.prepareOrganizeSchema();
     await versions.prepareVersionsSchema();
+    await collab.prepareCollabSchema();
 
     server.listen(PORT, () => {
         console.log(`🚀 Serveur backend démarré sur http://localhost:${PORT}`);
