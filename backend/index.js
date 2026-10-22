@@ -13,6 +13,8 @@ const organize = require("./routes/organize");
 const versions = require("./routes/versions");
 const registerRealtimeExtras = require("./realtime");
 const createCollab = require("./routes/collab");
+const createComments = require("./routes/comments");
+const createMessages = require("./routes/messages");
 
 const app = express();
 const server = http.createServer(app);
@@ -48,6 +50,14 @@ const io = new Server(server, {
 // remplace l'ancienne.
 const collab = createCollab(io);
 app.use("/api", collab.router);
+
+// Commentaires sur le texte
+const comments = createComments(io);
+app.use("/api", comments.router);
+
+// Messagerie (conversations privées et discussions de document)
+const messages = createMessages(io);
+app.use("/api", messages.router);
 
 /* =========================================================
    JWT
@@ -522,6 +532,21 @@ app.delete("/api/documents/:id", authMiddleware, async (req, res) => {
         await pool.query(
             "DELETE FROM notifications WHERE document_id = $1",
             [req.params.id]
+        );
+
+        await pool.query(
+            "DELETE FROM document_comments WHERE document_id = $1",
+            [req.params.id]
+        );
+
+        await pool.query(
+            "DELETE FROM chat_messages WHERE channel = $1",
+            [`doc:${req.params.id}`]
+        );
+
+        await pool.query(
+            "DELETE FROM chat_reads WHERE channel = $1",
+            [`doc:${req.params.id}`]
         );
 
         const result = await pool.query(
@@ -1205,6 +1230,8 @@ async function startServer() {
     await organize.prepareOrganizeSchema();
     await versions.prepareVersionsSchema();
     await collab.prepareCollabSchema();
+    await comments.prepareCommentsSchema();
+    await messages.prepareMessagesSchema();
 
     server.listen(PORT, () => {
         console.log(`🚀 Serveur backend démarré sur http://localhost:${PORT}`);

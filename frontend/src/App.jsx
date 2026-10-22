@@ -38,6 +38,7 @@ import ProtectedRoute from "./ProtectedRoute";
 import TextEditor from "./TextEditor";
 import ShareModal from "./ShareModal";
 import NotificationBell from "./NotificationBell";
+import Messenger from "./Messenger";
 
 import "./App.css";
 import "./organize.css";
@@ -1443,6 +1444,14 @@ function Workspace() {
                     </aside>
                 </div>
             )}
+
+            {/* ================= MESSAGERIE ================= */}
+
+            <Messenger
+                token={token}
+                documentId={openDoc ? openDoc.id : null}
+                lifted={Boolean(openDoc)}
+            />
 
             {/* ================= NOTIFICATION (toast) ================= */}
 
