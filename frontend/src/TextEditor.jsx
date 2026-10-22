@@ -72,7 +72,9 @@ import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import VersionHistory from "./VersionHistory";
 import { Ribbon, PAGE_SIZES, MARGINS, DEFAULT_PAGE } from "./Ribbon";
 import { CollabRibbon } from "./CollabRibbon";
+import { CommentRibbon } from "./CommentRibbon";
 import { NavPane, SuggestionsPanel, MentionPicker } from "./Panels";
+import { CommentsPanel } from "./CommentsPanel";
 import NotificationBell from "./NotificationBell";
 import {
   PageBreak,
@@ -88,12 +90,14 @@ import {
   collectSuggestions,
   collectHeadings,
 } from "./collabExtensions";
+import { CommentMark } from "./commentMark";
 import { TableOfContents } from "./TocNode";
 import { useTheme } from "./theme";
 
 import "./TextEditor.css";
 import "./extras.css";
 import "./collab.css";
+import "./comments.css";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -530,11 +534,15 @@ export default function TextEditor({
   const [scrollTop, setScrollTop] = useState(0);
 
   const [suggestMode, setSuggestMode] = useState(false);
-  const [sidebar, setSidebar] = useState(false);
+  const [sidebar, setSidebar] = useState(null); // null | "changes" | "comments"
   const [navOpen, setNavOpen] = useState(false);
   const [people, setPeople] = useState([]);
   const [mention, setMention] = useState(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+
+  const [comments, setComments] = useState([]);
+  const [draft, setDraft] = useState(null);
+  const [activeThread, setActiveThread] = useState(null);
 
   /* ---------------- REFS ---------------- */
 
@@ -545,6 +553,8 @@ export default function TextEditor({
   const socketRef = useRef(null);
   const saveRef = useRef(() => {});
   const printRef = useRef(() => {});
+  const startCommentRef = useRef(() => {});
+  const loadCommentsRef = useRef(() => {});
 
   const documentPropRef = useRef(documentProp);
   documentPropRef.current = documentProp;
@@ -616,6 +626,7 @@ export default function TextEditor({
       SuggestDelete,
       Suggestions.configure({ getUser: () => userRef.current }),
       MentionNode,
+      CommentMark,
       TableOfContents,
       Collaboration.configure({ document: yDoc }),
       CollaborationCaret.configure({
@@ -734,6 +745,56 @@ export default function TextEditor({
     [editor?.state.doc]
   );
 
+  // Fils de commentaires (regroupés par thread_id)
+  const threads = useMemo(() => {
+    const map = new Map();
+
+    comments.forEach((comment) => {
+      if (!map.has(comment.thread_id)) {
+        map.set(comment.thread_id, {
+          id: comment.thread_id,
+          quote: "",
+          resolved: false,
+          comments: [],
+        });
+      }
+
+      const thread = map.get(comment.thread_id);
+
+      thread.comments.push(comment);
+
+      if (comment.is_root) {
+        thread.quote = comment.quote || "";
+        thread.resolved = comment.resolved;
+      }
+    });
+
+    return [...map.values()].sort(
+      (a, b) =>
+        new Date(a.comments[0].created_at) - new Date(b.comments[0].created_at)
+    );
+  }, [comments]);
+
+  // Identifiants de commentaires réellement présents dans le texte
+  const commentIds = useMemo(() => {
+    const ids = new Set();
+
+    if (editor) {
+      editor.state.doc.descendants((node) => {
+        if (node.isText) {
+          node.marks.forEach((mark) => {
+            if (mark.type.name === "comment") ids.add(mark.attrs.commentId);
+          });
+        }
+      });
+    }
+
+    return ids;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor?.state.doc]);
+
+  const openThreadCount = threads.filter((thread) => !thread.resolved).length;
+
   const inTable = Boolean(editor?.isActive("table"));
 
   useEffect(() => {
@@ -807,6 +868,29 @@ export default function TextEditor({
     setFindOpen(true);
     setReplaceMode(Boolean(withReplace));
   }, []);
+
+  /* ---------------- COMMENTAIRES : CHARGEMENT ---------------- */
+
+  const loadComments = useCallback(async () => {
+    if (!documentId || !token) return;
+
+    try {
+      const response = await axios.get(
+        `${API_URL}/documents/${documentId}/comments`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      setComments(Array.isArray(response.data) ? response.data : []);
+    } catch {
+      // le prochain événement ou rechargement réessaiera
+    }
+  }, [documentId, token]);
+
+  loadCommentsRef.current = loadComments;
+
+  useEffect(() => {
+    loadComments();
+  }, [loadComments]);
 
   /* ---------------- MENTIONS ---------------- */
 
@@ -1023,6 +1107,153 @@ export default function TextEditor({
     if (!editor || readOnly) return;
 
     editor.chain().focus().insertContent({ type: "tableOfContents" }).run();
+  };
+
+  /* ---------------- COMMENTAIRES : ACTIONS ---------------- */
+
+  const startComment = () => {
+    if (!editor || readOnly) return;
+
+    const { from, to, empty } = editor.state.selection;
+
+    if (empty) {
+      setErrorMessage("Sélectionnez d'abord le texte à commenter.");
+      return;
+    }
+
+    const quote = editor.state.doc.textBetween(from, to, " ").slice(0, 300);
+
+    const id =
+      window.crypto?.randomUUID?.() ||
+      `c${Date.now()}${Math.random().toString(36).slice(2, 10)}`;
+
+    setDraft({ id, from, to, quote });
+    setSidebar("comments");
+  };
+
+  startCommentRef.current = startComment;
+
+  const submitDraft = async (body) => {
+    if (!draft || !editor) return false;
+
+    let current = "";
+
+    try {
+      current = editor.state.doc
+        .textBetween(draft.from, draft.to, " ")
+        .slice(0, 300);
+    } catch {
+      current = "";
+    }
+
+    if (current !== draft.quote) {
+      setErrorMessage(
+        "Le texte a changé pendant la saisie. Sélectionnez-le de nouveau puis recommencez."
+      );
+      setDraft(null);
+      return false;
+    }
+
+    editor
+      .chain()
+      .setTextSelection({ from: draft.from, to: draft.to })
+      .setComment(draft.id)
+      .run();
+
+    try {
+      await axios.post(
+        `${API_URL}/documents/${documentId}/comments`,
+        { threadId: draft.id, body, quote: draft.quote },
+        { headers: authHeaders }
+      );
+
+      setActiveThread(draft.id);
+      setDraft(null);
+      await loadComments();
+
+      return true;
+    } catch (error) {
+      editor.commands.removeComment(draft.id);
+
+      setErrorMessage(
+        error.response?.data?.message || "Impossible d'ajouter le commentaire."
+      );
+
+      return false;
+    }
+  };
+
+  const replyToThread = async (threadId, body) => {
+    try {
+      await axios.post(
+        `${API_URL}/documents/${documentId}/comments`,
+        { threadId, body },
+        { headers: authHeaders }
+      );
+
+      await loadComments();
+
+      return true;
+    } catch (error) {
+      setErrorMessage(
+        error.response?.data?.message || "Impossible d'envoyer la réponse."
+      );
+
+      return false;
+    }
+  };
+
+  const resolveThread = async (threadId, resolved) => {
+    try {
+      await axios.put(
+        `${API_URL}/documents/${documentId}/comments/threads/${threadId}/resolve`,
+        { resolved },
+        { headers: authHeaders }
+      );
+
+      await loadComments();
+    } catch (error) {
+      setErrorMessage(
+        error.response?.data?.message || "Impossible de modifier le fil."
+      );
+    }
+  };
+
+  const deleteComment = async (comment) => {
+    if (
+      !window.confirm(
+        comment.is_root
+          ? "Supprimer ce commentaire et toutes ses réponses ?"
+          : "Supprimer cette réponse ?"
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const response = await axios.delete(
+        `${API_URL}/documents/${documentId}/comments/${comment.id}`,
+        { headers: authHeaders }
+      );
+
+      if (response.data?.threadDeleted && editor) {
+        editor.commands.removeComment(response.data.threadId);
+      }
+
+      await loadComments();
+    } catch (error) {
+      setErrorMessage(
+        error.response?.data?.message || "Impossible de supprimer."
+      );
+    }
+  };
+
+  const focusThread = (thread) => {
+    setActiveThread(thread.id);
+
+    editor?.view.dom
+      .querySelector(`[data-comment-id="${thread.id}"]`)
+      ?.scrollIntoView({ block: "center", behavior: "smooth" });
   };
 
   /* ---------------- DOCUMENT VIDE ? ---------------- */
@@ -1272,6 +1503,14 @@ export default function TextEditor({
       window.dispatchEvent(new Event("collab:notify"));
     }
 
+    function handleCommentsChanged(data) {
+      if (data?.documentId && String(data.documentId) !== String(documentId)) {
+        return;
+      }
+
+      loadCommentsRef.current();
+    }
+
     function handleConnect() {
       setStatus("Connecté");
       setErrorMessage("");
@@ -1395,6 +1634,7 @@ export default function TextEditor({
     socket.on("awareness-update", handleRemoteAwareness);
     socket.on("awareness-remove", handleAwarenessRemove);
     socket.on("notification", handleNotification);
+    socket.on("comments-changed", handleCommentsChanged);
 
     yDoc.on("update", handleLocalUpdate);
     awareness.on("update", handleAwarenessUpdate);
@@ -1417,6 +1657,7 @@ export default function TextEditor({
       socket.off("awareness-update", handleRemoteAwareness);
       socket.off("awareness-remove", handleAwarenessRemove);
       socket.off("notification", handleNotification);
+      socket.off("comments-changed", handleCommentsChanged);
 
       socket.disconnect();
 
@@ -1753,6 +1994,11 @@ export default function TextEditor({
       )
       .forEach((element) => element.remove());
 
+    // Les surlignages de commentaires ne sont pas exportés
+    contentClone
+      .querySelectorAll(".comment-mark")
+      .forEach((element) => element.classList.remove("comment-mark"));
+
     exportContainer.appendChild(contentClone);
 
     const safeFileName = (title || "document")
@@ -1913,7 +2159,10 @@ export default function TextEditor({
       const key = event.key.toLowerCase();
       const mod = event.ctrlKey || event.metaKey;
 
-      if (mod && event.shiftKey && key === "e") {
+      if (mod && event.altKey && event.code === "KeyM") {
+        event.preventDefault();
+        startCommentRef.current();
+      } else if (mod && event.shiftKey && key === "e") {
         event.preventDefault();
         setSuggestMode((value) => !value);
       } else if (mod && key === "s") {
@@ -1999,12 +2248,29 @@ export default function TextEditor({
     pageSetup.header || pageSetup.footer || pageSetup.pageNumbers
   );
 
+  // Surlignage : fil actif en évidence, fils résolus atténués
+  const safeId = (id) => /^[\w-]+$/.test(String(id));
+
+  const commentCss = [
+    ...threads
+      .filter((thread) => thread.resolved && safeId(thread.id))
+      .map(
+        (thread) =>
+          `.comment-mark[data-comment-id="${thread.id}"]{background:transparent !important;border-bottom-color:transparent !important}`
+      ),
+    activeThread && safeId(activeThread)
+      ? `.comment-mark[data-comment-id="${activeThread}"]{background:#fde047 !important}`
+      : "",
+  ].join("");
+
   /* =========================================================
      INTERFACE
   ========================================================= */
 
   return (
     <div className="editor-screen">
+      <style>{commentCss}</style>
+
       {/* ------------------- BARRE DE TITRE ------------------- */}
 
       <header className="titlebar">
@@ -2197,14 +2463,26 @@ export default function TextEditor({
               count={suggestions.length}
               onAcceptAll={() => resolveAll(true)}
               onRejectAll={() => resolveAll(false)}
-              sidebarOpen={sidebar}
-              onToggleSidebar={() => setSidebar((value) => !value)}
+              sidebarOpen={sidebar === "changes"}
+              onToggleSidebar={() =>
+                setSidebar((value) => (value === "changes" ? null : "changes"))
+              }
               navOpen={navOpen}
               onToggleNav={() => setNavOpen((value) => !value)}
               onInsertToc={insertToc}
               onMention={insertMentionTrigger}
               pageSetup={pageSetup}
               setPageSetup={setPageSetup}
+            />
+
+            <CommentRibbon
+              tab={activeTab}
+              onNew={startComment}
+              commentsOpen={sidebar === "comments"}
+              onToggleComments={() =>
+                setSidebar((value) => (value === "comments" ? null : "comments"))
+              }
+              count={openThreadCount}
             />
           </div>
         </>
@@ -2345,7 +2623,7 @@ export default function TextEditor({
         </div>
       )}
 
-      {/* ------------------- CORPS : PLAN + DOCUMENT + MODIFICATIONS ------------------- */}
+      {/* ------------------- CORPS : PLAN + DOCUMENT + VOLETS ------------------- */}
 
       <div className="editor-body">
         {navOpen && !readingMode && (
@@ -2386,6 +2664,14 @@ export default function TextEditor({
             <div
               ref={pageRef}
               className="tiptap-document-page"
+              onClick={(event) => {
+                const mark = event.target.closest?.("[data-comment-id]");
+
+                if (mark) {
+                  setActiveThread(mark.getAttribute("data-comment-id"));
+                  setSidebar("comments");
+                }
+              }}
               style={{
                 position: "relative",
                 width: pageW,
@@ -2440,7 +2726,7 @@ export default function TextEditor({
           </div>
         </div>
 
-        {sidebar && !readingMode && (
+        {sidebar === "changes" && !readingMode && (
           <SuggestionsPanel
             suggestions={suggestions}
             canEdit={!readOnly}
@@ -2450,7 +2736,26 @@ export default function TextEditor({
             onReject={(item) => resolveOne(item, false)}
             onAcceptAll={() => resolveAll(true)}
             onRejectAll={() => resolveAll(false)}
-            onClose={() => setSidebar(false)}
+            onClose={() => setSidebar(null)}
+          />
+        )}
+
+        {sidebar === "comments" && !readingMode && (
+          <CommentsPanel
+            threads={threads}
+            inDoc={ready ? commentIds : null}
+            draft={draft}
+            activeThread={activeThread}
+            canComment={!readOnly}
+            userId={currentUser.id}
+            isOwner={documentProp?.permission === "owner"}
+            onSubmitDraft={submitDraft}
+            onCancelDraft={() => setDraft(null)}
+            onReply={replyToThread}
+            onResolve={resolveThread}
+            onDelete={deleteComment}
+            onFocus={focusThread}
+            onClose={() => setSidebar(null)}
           />
         )}
       </div>
@@ -2651,6 +2956,9 @@ export default function TextEditor({
 
               <dt>Modifications en attente</dt>
               <dd>{suggestions.length}</dd>
+
+              <dt>Commentaires ouverts</dt>
+              <dd>{openThreadCount}</dd>
 
               <dt>Collaborateurs en ligne</dt>
               <dd>{collaborators}</dd>

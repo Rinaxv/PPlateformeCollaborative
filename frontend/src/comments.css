@@ -1,0 +1,249 @@
+/* =========================================================
+   TEXTE COMMENTE
+========================================================= */
+
+.comment-mark {
+  background: rgba(250, 204, 21, 0.32);
+  border-bottom: 2px solid #facc15;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.comment-mark:hover {
+  background: rgba(250, 204, 21, 0.5);
+}
+
+/* =========================================================
+   VOLET DES COMMENTAIRES
+========================================================= */
+
+.cm-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.cm-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-left: 4px solid #facc15;
+  border-radius: 12px;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease),
+    border-color 0.2s ease;
+  animation: fadeUp 0.3s var(--ease);
+}
+
+.cm-thread:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.cm-thread.active {
+  border-color: var(--accent);
+  border-left-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-md);
+}
+
+.cm-thread.resolved {
+  border-left-color: #10b981;
+  opacity: 0.7;
+}
+
+.cm-draft {
+  cursor: default;
+  border-left-color: var(--accent);
+}
+
+.cm-draft-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.cm-quote {
+  display: -webkit-box;
+  margin: 0;
+  padding: 4px 10px;
+  overflow: hidden;
+  border-left: 3px solid #facc15;
+  background: rgba(250, 204, 21, 0.1);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-style: italic;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.cm-orphan {
+  align-self: flex-start;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: #d97706;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cm-comment {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cm-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.cm-head time {
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.cm-av {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--grad);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cm-del {
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.cm-del:hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.cm-body {
+  margin: 0;
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cm-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.cm-resolve {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.18s ease;
+}
+
+.cm-resolve:hover {
+  border-color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+}
+
+.cm-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cm-box textarea {
+  width: 100%;
+  padding: 9px 12px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13.5px;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.cm-box textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.cm-box-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.cm-send,
+.cm-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.cm-send {
+  border: none;
+  background: var(--grad);
+  color: #fff;
+  box-shadow: 0 6px 14px var(--accent-ring);
+  transition: transform 0.2s var(--ease), opacity 0.2s ease;
+}
+
+.cm-send:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.cm-send:disabled {
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.cm-ghost {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.cm-ghost:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.cm-hint {
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
